@@ -1,0 +1,512 @@
+﻿// RainbowMiner web UI shared library v2.0
+// Consolidates former utilities-1.9.js + inline ConfigLoader, adds theme and
+// clipboard helpers. Classic (non-module) script: bootstrap-table resolves
+// formatters/sorters by name on window.
+
+"use strict";
+
+/* ---------------------------------------------------------------------------
+ * Theme (localStorage + prefers-color-scheme), applied immediately on load.
+ * Migrates the legacy "rbm-theme" cookie once, then the cookie is unused.
+ * ------------------------------------------------------------------------- */
+const RbmTheme = (function () {
+    const KEY = "rbm-theme";
+
+    function fromCookie() {
+        const m = document.cookie.match(/(?:^|;\s*)rbm-theme=([^;]*)/);
+        return m ? decodeURIComponent(m[1]) : "";
+    }
+
+    function get() {
+        let t = localStorage.getItem(KEY);
+        if (!t) {
+            t = fromCookie(); // one-time migration from the old cookie
+            if (t) localStorage.setItem(KEY, t);
+        }
+        if (t !== "dark" && t !== "light") {
+            t = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        }
+        return t;
+    }
+
+    function set(t) {
+        if (t !== "dark") t = "light";
+        localStorage.setItem(KEY, t);
+        apply(t);
+    }
+
+    function apply(t) {
+        document.documentElement.setAttribute("data-bs-theme", t === "dark" ? "dark" : "light");
+    }
+
+    apply(get()); // pre-paint: this script loads in <head>, before first render
+
+    return { get: get, set: set };
+})();
+
+/* ---------------------------------------------------------------------------
+ * Clipboard helper.
+ * navigator.clipboard needs a secure context: that includes http://localhost
+ * but NOT http://<LAN-IP>, which is how remote rigs are usually opened -
+ * hence the hidden-textarea fallback.
+ * ------------------------------------------------------------------------- */
+function copyToClipboard(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+        return navigator.clipboard.writeText(text);
+    }
+    return new Promise(function (resolve, reject) {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        try {
+            document.execCommand("copy") ? resolve() : reject(new Error("copy failed"));
+        } catch (err) {
+            reject(err);
+        } finally {
+            ta.remove();
+        }
+    });
+}
+
+/* ---------------------------------------------------------------------------
+ * ConfigLoader (moved from parts/head.html inline script)
+ * ------------------------------------------------------------------------- */
+var selected_currency = { currency: null, rate: 0 };
+
+/* ---------------------------------------------------------------------------
+ * Network helpers
+ * ------------------------------------------------------------------------- */
+
+// fetch with a timeout: a request hung on flaky WLAN aborts after ~10s
+// instead of freezing its poll loop for the browser's default (30-300s)
+function rbmFetch(url, options) {
+    const opts = Object.assign({}, options);
+    const timeout = opts.timeout || 10000;
+    delete opts.timeout;
+    const controller = new AbortController();
+    opts.signal = controller.signal;
+    const timer = setTimeout(() => controller.abort(), timeout);
+    return fetch(url, opts).finally(() => clearTimeout(timer));
+}
+
+// Self-scheduling poll loop with exponential backoff:
+// - fn() is awaited; on success the next run is `interval` away
+// - on failure the delay doubles up to 8x interval and only the first
+//   failure of a streak is logged (no console storm while the RainbowMiner
+//   server restarts), recovery is logged once
+// - nothing is fetched while the tab is hidden
+function rbmPoll(name, interval, fn) {
+    let failures = 0;
+    (async function run() {
+        let delay = interval;
+        if (!document.hidden) {
+            try {
+                await fn();
+                if (failures) console.info(name + ": recovered after " + failures + " failed attempt(s)");
+                failures = 0;
+            } catch (error) {
+                failures++;
+                if (failures === 1) console.warn(name + ":", error.message || error, "- backing off");
+                delay = Math.min(interval * Math.pow(2, failures), interval * 8);
+            }
+        }
+        window.setTimeout(run, delay);
+    })();
+}
+
+const ConfigLoader = (function () {
+    let config = null;
+    let ready = false;
+    let resolvePromise, rejectPromise;
+    const configPromise = new Promise((resolve, reject) => {
+        resolvePromise = resolve;
+        rejectPromise = reject;
+    });
+
+    const MAX_ATTEMPTS = 10;
+    const RETRY_DELAY_MS = 1000;
+    const REFRESH_INTERVAL_MS = 300000;
+
+    function loadConfig(attempt) {
+        rbmFetch("/info")
+        .then(response => {
+            if (!response.ok) throw new Error("Server responded with error");
+            return response.json();
+        })
+        .then(data => {
+            if (!data.Version) {
+                if (attempt < MAX_ATTEMPTS) {
+                    setTimeout(() => loadConfig(attempt + 1), RETRY_DELAY_MS);
+                } else {
+                    rejectPromise("Failed to load config: Version missing after " + MAX_ATTEMPTS + " attempts.");
+                    console.error("ConfigLoader error: Version missing in /info response.");
+                }
+                return;
+            }
+
+            config = data;
+
+            // Optional globals
+            window.nDecimalSeparator = config.DecSep;
+            window.tDecimalSeparator = config.DecSep === "." ? "," : ".";
+
+            ready = true;
+
+            resolvePromise(config);
+            setTimeout(() => loadConfig(1), REFRESH_INTERVAL_MS); // Periodic refresh
+        })
+        .catch(error => {
+            if (attempt < MAX_ATTEMPTS) {
+                console.warn("Retrying to fetch /info... attempt", attempt + 1);
+                setTimeout(() => loadConfig(attempt + 1), RETRY_DELAY_MS);
+            } else {
+                rejectPromise("Failed to fetch /info after " + MAX_ATTEMPTS + " attempts.");
+                console.error("ConfigLoader error:", error);
+            }
+        });
+    }
+
+    loadConfig(1);
+
+    return {
+        getConfig: () => config,
+        isReady: () => ready,
+        whenReady: () => configPromise
+    };
+})();
+
+/* ---------------------------------------------------------------------------
+ * Formatters and sorters (unchanged from utilities-1.9.js)
+ * ------------------------------------------------------------------------- */
+function timeSince(date) {
+  var seconds = Math.max(Math.floor((new Date() - date) / 1000),0);
+  var interval = Math.floor(seconds / 31536000);
+  if (interval > 1) {
+    return interval + " years ago";
+  }
+  interval = Math.floor(seconds / 2592000);
+  if (interval > 1) {
+    return interval + " months ago";
+  }
+  interval = Math.floor(seconds / 86400);
+  if (interval > 1) {
+    return interval + " days ago";
+  }
+  interval = Math.floor(seconds / 3600);
+  if (interval > 1) {
+     return interval + " hours ago";
+  }
+
+  interval = Math.floor(seconds / 60);
+  if (interval > 1) {
+    return interval + " minutes ago";
+  }
+  return Math.floor(seconds) + " seconds ago";
+}
+
+function formatHashRateValue(value) {
+  var sizes = ['H/s','KH/s','MH/s','GH/s','TH/s'];
+  if (value == 0) return '0 H/s';
+  if (isNaN(value)) return '-';
+  var i = Math.floor(Math.log(value) / Math.log(1000));
+  if (i<0) {i=0;} else if (i>4) {i=4;}
+  return parseFloat((value / Math.pow(1000, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function formatHashRate(value) {
+  if (Array.isArray(value)) {
+    return value.map(formatHashRate).toString();
+  } else {
+    return formatHashRateValue(value);
+  }
+}
+
+function formatBTC(value,unit) {
+  var m = 1, f=8;
+  if (typeof unit !== "undefined" && unit != "BTC") {
+    if (unit == "mBTC") {m=1000;f=5}
+    else if (unit == "sat") {m=1e8;f=0}
+  }
+  return (parseFloat(value)*m).toFixed(f);
+};
+
+function formatmBTC(value) {
+    var v = parseFloat(value) * 1000;
+    return v.toFixed(5);
+};
+
+function formatArrayAsString(value) {
+  return value.toString();
+};
+
+function formatMinerHashRatesAlgorithms(value) {
+  return Object.keys(value).toString();
+};
+
+function formatMinerHashRatesValues(value) {
+  var hashrates = [];
+  for (var property in value) {
+    hashrates.push(formatHashRateValue(value[property]));
+  }
+  return hashrates.toString();
+}
+
+function formatPower(value) {
+  if (typeof value == "undefined" || value < 0) return "N/A"
+  return value + " W"
+}
+
+function formatPrices(data) {
+    return (data * 1000000000).toFixed(10);
+}
+
+function getSelectedCurrency() {
+    if (selected_currency.currency != null && selected_currency.rate) {
+        return selected_currency
+    }
+
+    const sel = document.getElementById("profit_currency");
+    const opt = sel && sel.selectedOptions.length ? sel.selectedOptions[0] : null;
+
+    var selcur = {
+        rate: 1000,
+        currency: opt ? opt.value : window.localStorage.getItem("currency")
+    }
+    if (opt) {
+        selcur.rate = parseFloat(opt.dataset.rate);
+    } else if (selcur.currency == "BTC") { // note: fixes the old 'curreny' typo that made this branch dead
+        selcur.rate = 1
+    } else if (selcur.currency == "mBTC") {
+        selcur.rate = 1000
+    } else if (selcur.currency == "sat") {
+        selcur.rate = 1e8
+    } else {
+        selcur.currency = "mBTC";
+        selcur.rate = 1000;
+    }
+    return selcur
+}
+
+function formatPricesByCurrency(data,selcur) {
+    if (typeof data == "undefined" || !data) return "-";
+    if (typeof selcur.currency == "undefined" || !selcur.currency) selcur = {currency: "mBTC", rate: 1000}
+    if (typeof selcur.rate == "undefined" || !selcur.rate) {
+        if (selcur.currency == "BTC") selcur.rate = 1
+        else if (selcur.currency == "mBTC") selcur.rate = 1000
+        else if (selcur.currency == "sat") selcur.rate = 1e8
+        else {
+            return formatPricesBTC(data);
+        }
+    }
+
+    var value = parseFloat(data) * selcur.rate;
+
+    if (selcur.currency == "BTC") {
+        return value.toFixed(8).toString();
+	} else if (selcur.currency == "mBTC") {
+        return value.toFixed(5).toString() + '&nbsp;m';
+    } else if (selcur.currency == "sat") {
+        return Math.round(value);
+    }
+    return value.toFixed(3).toString() + '&nbsp;' + selcur.currency;
+}
+
+function formatPricesBTC(data) {
+    if (typeof data == "undefined" || !data) return "-";
+    var value = parseFloat(data);
+    const csel = document.getElementById("profit_currency");
+    var currency = (csel && csel.options.length) ? csel.value : window.localStorage.getItem("currency");
+    if (currency == "BTC") {
+        return value.toFixed(8).toString();
+	}
+    var i = Math.floor(Math.log(value) / Math.log(1000));
+    var cm = "", rto = 5;
+    if (i < 0) { cm = "m"; value *= 1e3; rto = 5 }
+    return value.toFixed(rto).toString() + (cm ? '&nbsp;' + cm : '');
+}
+
+function formatDate(data) {
+    return timeSince(new Date(data));
+}
+
+function formatUptime(uptime) {
+    var uptime = parseInt(uptime);
+    var d = Math.floor(uptime / 86400); uptime -= d*86400;
+    var h = Math.floor(uptime / 3600); uptime -= h*3600;
+    var m = Math.floor(uptime / 60); uptime -= m*60;
+    return d + '.' + (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m + ':' + (uptime < 10 ? '0' : '') + uptime;
+}
+
+function formatBLK(data) {
+    if (typeof data == "undefined") return data;
+    if (data == null) return "-";
+    if (!data) return "&infin;"
+    data = 86400 / data
+    if (data >= 86400) {
+        if (data >= 31536000) {data = "&gt;1 y"}
+        else if (data >= 15768000) {data = "&gt;6 mo"}
+        else if (data >= 2628000) {data = "&gt;1 mo"}
+        else if (data >= 604800) {data = "&gt;1 w"}
+        else {
+            data /= 86400
+            data = data.toFixed(1) + " d"
+        }
+    }
+    else if (data >= 3600) {
+        data /= 3600
+        data = data.toFixed(1) + " h"
+    }
+    else if (data >= 60) {
+        data /= 60
+        data = data.toFixed(1) + " m"
+    }
+    else {
+        data = data.toFixed(1) + " s"
+    }
+
+    return data.replace(".0 ","&nbsp;").replace(" ","&nbsp;")
+}
+
+function formatTSL(data) {
+    if (typeof data == "undefined") return data;
+    data = data / 60
+    return data.toFixed(1)
+}
+
+// Algorithms RainbowMiner refuses to mine because their memory footprint does not fit
+// into this machine's RAM (RandomX needs a ~2GB dataset). The log says this once per
+// session, so the banner is what tells the user on every page why an algorithm is gone.
+async function renderMemoryNotice() {
+    const el = document.getElementById("rbm-notice");
+    if (!el) return;
+    const KEY = "rbm-notice-memory";
+    try {
+        const res = await rbmFetch("/memoryskipped");
+        if (!res.ok) return;
+        const list = await res.json();
+        if (!Array.isArray(list) || !list.length) { el.classList.add("d-none"); return; }
+        const total = list[0].TotalGB, minfree = list[0].MinFreeGB;
+        // Dismissal is remembered per situation, not forever: a newly skipped algorithm
+        // or a changed MinFreeMemoryGB re-opens the notice.
+        const sig = list.map(x => x.Algorithm).join(",") + "|" + total + "|" + minfree;
+        let seen = "";
+        try { seen = localStorage.getItem(KEY) || ""; } catch (e) { }
+        if (seen === sig) { el.classList.add("d-none"); return; }
+        const names = list.map(x => esc(formatAlgorithm(x.Algorithm)) + " (" + x.NeedGB + " GB)").join(", ");
+        el.innerHTML = "<button type=\"button\" class=\"btn-close\" aria-label=\"Close\"></button>" +
+            "<strong>Not enough RAM:</strong> " + names +
+            " cannot be mined on this machine (" + total + " GB total, keeping " + minfree +
+            " GB free for the system). Lower or zero <code>MinFreeMemoryGB</code> in " +
+            "<a href=\"/setup.html\">Setup</a> to mine them anyway.";
+        el.querySelector(".btn-close").addEventListener("click", function () {
+            el.classList.add("d-none");
+            try { localStorage.setItem(KEY, sig); } catch (e) { }
+        });
+        el.classList.remove("d-none");
+    } catch (e) { /* endpoint missing on an older rig: stay quiet */ }
+}
+document.addEventListener("DOMContentLoaded", renderMemoryNotice);
+
+function formatAlgorithm(data) {
+    const cfg = ConfigLoader.getConfig();
+    // A missing second algorithm must stay empty - String(undefined) would render
+    // a literal "undefined" and end up appended as " + undefined".
+    if (data === null || data === undefined || data === "") return "";
+    // Pool alternates arrive as "<Algorithm>-@<PoolName>". The pool is shown in its own
+    // column, so display the plain algorithm - and let it hit the AlgorithmMap lookup.
+    // Display only: never write this back onto item.Algorithm, that is the rebench identity.
+    data = String(data).replace(/-@.*$/, '')
+    return (cfg && cfg.EnableAlgorithmMapping && cfg.AlgorithmMap[data]) ? cfg.AlgorithmMap[data] : data;
+}
+
+// Show the shared modal. Body is text by default; pass asHtml=true for
+// trusted server-generated markup (e.g. ps1 script output).
+function rbmShowModal(body, title, asHtml) {
+    const modal = document.getElementById('myModal');
+    if (asHtml) modal.querySelector('.modal-body').innerHTML = body;
+    else modal.querySelector('.modal-body').textContent = body;
+    modal.querySelector('.modal-title').textContent = title;
+    bootstrap.Modal.getOrCreateInstance(modal).show();
+}
+
+// Serialize a form and POST it to /saveconfig, honoring the config lock.
+// Wire format is identical to jQuery's $(form).serialize().
+async function rbmSubmitConfig(form, cfg, afterSave) {
+    if (cfg.IsLocked) {
+        rbmShowModal('To be able to save, manually set parameter "APIlockConfig" to "0" in config.txt', 'Warning: config lock is enabled');
+        return;
+    }
+    try {
+        const response = await fetch("/saveconfig", {
+            method: "POST",
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+            body: new URLSearchParams(new FormData(form)).toString()
+        });
+        const data = await response.json();
+        if (data.Success) {
+            rbmShowModal('RainbowMiner will pick up the new configuration after the current round has ended.', 'Configuration saved!');
+        } else {
+            rbmShowModal('Something went wrong or the configuration is locked via APILockConfig in config.txt', 'Configuration NOT saved!');
+        }
+        if (afterSave) afterSave(data);
+    } catch (error) {
+        console.error("saveconfig:", error);
+    }
+}
+
+// Show/hide elements via inline display (the hidden attribute loses against
+// Bootstrap display classes like .row/.d-flex).
+function rbmToggleDisplay(selector, visible) {
+    for (const el of document.querySelectorAll(selector)) {
+        el.style.display = visible ? '' : 'none';
+    }
+}
+
+// Escape a string for safe insertion into HTML
+function esc(s) {
+    // null/undefined render as empty string (Handlebars semantics - a coin
+    // without a -Params config entry must not show a literal "undefined")
+    if (s === null || s === undefined) return "";
+    return String(s).replace(/[&<>"']/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+}
+
+function detailFormatter(index, row) {
+  // JSON.stringify escapes quotes but not angle brackets - esc() both,
+  // since rows may contain data reported by remote workers.
+  var html = [];
+  for (const [key, value] of Object.entries(row)) {
+    if (key.startsWith('_rbm')) continue; // internal table-layer state
+    html.push('<p class="mb-0"><b>' + esc(key) + ':</b> ' + esc(JSON.stringify(value)) + '</p>');
+  }
+  return html.join('');
+}
+
+function formatBytes(bytes) {
+  var decimals = 2
+  if(bytes == 0) return '0 Bytes';
+  var k = 1024,
+    dm = decimals || 2,
+    sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'],
+    i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
+
+function formatVersion(version) {
+    return version.Major + '.' + version.Minor + '.' + version.Build + '.' +version.Revision
+}
+
+function sortNumber(a,b,rowA,rowB) {
+    a = Number(a.replace(/[^0-9.-]+/g,""))
+    b = Number(b.replace(/[^0-9.-]+/g,""))
+
+    if (a > b) return 1
+    if (a < b) return -1
+    return 0
+}
+

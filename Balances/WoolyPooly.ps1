@@ -8,14 +8,11 @@ param(
 
 # $Name = Get-Item $MyInvocation.MyCommand.Path | Select-Object -ExpandProperty BaseName
 
-$Payout_Currencies = @()
-foreach($PoolExt in @("","Solo")) {
-    if (-not $UsePools -or "$($Name)$($PoolExt)" -in $UsePools) {
-        $Payout_Currencies += @($Config.Pools."$($Name)$($PoolExt)".Wallets.PSObject.Properties | Select-Object)
+$Payout_Currencies = @(foreach ($PoolExt in "","Solo") {
+    if (-not $UsePools -or "$Name$PoolExt" -in $UsePools) {
+        $Config.Pools."$Name$PoolExt".Wallets.PSObject.Properties | Where-Object Value
     }
-}
-
-$Payout_Currencies = $Payout_Currencies | Where-Object Value | Select-Object Name,Value -Unique | Sort-Object Name,Value
+}) | Sort-Object Name, Value -Unique
 
 if (-not $Payout_Currencies) {
     Write-Log -Level Verbose "Cannot get balance on pool ($Name) - no wallet address specified. "
@@ -26,7 +23,7 @@ $Pools_Data = @(
     [PSCustomObject]@{symbol = "AE";   port = 20000; host = "ae"; rpc = "aeternity-1"}
     [PSCustomObject]@{symbol = "ALPH"; port = 3106; host = "alph"; rpc = "alph-1"}
     [PSCustomObject]@{symbol = "CFX";  port = 3094; host = "cfx"; rpc = "cfx-1"}
-    [PSCustomObject]@{symbol = "CLO";  port = 3126; host = "clore"; rpc = "clore-1"}
+    #[PSCustomObject]@{symbol = "CLO";  port = 3126; host = "clore"; rpc = "clore-1"} #CLORE ended PoW
     [PSCustomObject]@{symbol = "CTXC"; port = 40000; host = "cortex"; rpc = "cortex-1"}
     [PSCustomObject]@{symbol = "ERG";  port = 3100; host = "erg"; rpc = "ergo-1"}
     [PSCustomObject]@{symbol = "ETC";  port = 35000; host = "etc"; rpc = "etc-1"}
@@ -35,6 +32,7 @@ $Pools_Data = @(
     [PSCustomObject]@{symbol = "KAS"; port = 3112; host = "kas"; rpc = "kas-1"}
     [PSCustomObject]@{symbol = "KLS"; port = 3132; host = "kls"; rpc = "kls-1"}
     [PSCustomObject]@{symbol = "MEWC"; port = 3116; host = "mewc"; rpc = "mewc-1"}
+    [PSCustomObject]@{symbol = "MWC"; port = 11000; host = "mwc"; rpc = "mwc-1"}
     [PSCustomObject]@{symbol = "NEXA"; port = 3124; host = "nexa"; rpc = "nexa-1"}
     [PSCustomObject]@{symbol = "NOVO"; port = 3134; host = "novo"; rpc = "novo-1"}
     [PSCustomObject]@{symbol = "OCTA"; port = 3130; host = "octa"; rpc = "octa-1"}

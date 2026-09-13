@@ -13,13 +13,13 @@ if (-not $Global:DeviceCache.DevicesByTypes.AMD -and -not $Global:DeviceCache.De
 $ManualUri = "https://bitcointalk.org/index.php?topic=4767892.0"
 $Port = "330{0:d2}"
 $DevFee = 2.0
-$Version = "2.5e2"
+$Version = "2.5e3"
 
 if ($IsLinux) {
     $Path = ".\Bin\NVIDIA-MiniZ\miniZ"
     $UriCuda = @(
         [PSCustomObject]@{
-            Uri = "https://github.com/RainbowMiner/miner-binaries/releases/download/v2.5e2-miniz/miniZ_v2.5e2_linux-x64.tar.gz"
+            Uri = "https://github.com/RainbowMiner/miner-binaries/releases/download/v2.5e3-miniz/miniZ_v2.5e3_linux-x64.tar.gz"
             Cuda = "8.0"
         }
     )
@@ -27,7 +27,7 @@ if ($IsLinux) {
     $Path = ".\Bin\NVIDIA-MiniZ\miniZ.exe"
     $UriCuda = @(
         [PSCustomObject]@{
-            Uri = "https://github.com/RainbowMiner/miner-binaries/releases/download/v2.5e2-miniz/miniZ_v2.5e2_win-x64.7z"
+            Uri = "https://github.com/RainbowMiner/miner-binaries/releases/download/v2.5e3-miniz/miniZ_v2.5e3_win-x64.7z"
             Cuda = "8.0"
         }
     )
@@ -46,8 +46,8 @@ $Commands = [PSCustomObject[]]@(
     #[PSCustomObject]@{MainAlgorithm = "Equihash16x5";               MinMemGB = 1; Params = "--par=96,5";       Vendor = @("AMD","NVIDIA"); ExtendInterval = 3; AutoPers = $true;  Fee = $DevFee;               Compute = @("RDNA2","RDNA3")} #Equihash 96,5
     [PSCustomObject]@{MainAlgorithm = "Equihash24x5";               MinMemGB = 2; Params = "--par=144,5";      Vendor = @("AMD","NVIDIA"); ExtendInterval = 3; AutoPers = $true;  Fee = $DevFee;               Compute = @("GCN4","RDNA2","RDNA3")} #Equihash 144,5
     [PSCustomObject]@{MainAlgorithm = "Equihash24x7";               MinMemGB = 2; Params = "--par=192,7";      Vendor = @("AMD","NVIDIA"); ExtendInterval = 3; AutoPers = $true;  Fee = $DevFee;               Compute = @("RDNA2","RDNA3")} #Equihash 192,7 
-    [PSCustomObject]@{MainAlgorithm = "EquihashR25x4";              MinMemGB = 2; Params = "--par=125,4";      Vendor = @("AMD","NVIDIA"); ExtendInterval = 3; AutoPers = $true;  Fee = $DevFee;               Compute = @("GCN4","RDNA2","RDNA3")} #Equihash 125,4,0 (ZelCash)
-    [PSCustomObject]@{MainAlgorithm = "EquihashR25x5";              MinMemGB = 3; Params = "--par=150,5";      Vendor = @("AMD","NVIDIA"); ExtendInterval = 3; AutoPers = $true;  Fee = $DevFee;               Compute = @("GCN4","RDNA2","RDNA3")} #Equihash 150,5,0 (GRIMM)
+    #[PSCustomObject]@{MainAlgorithm = "EquihashR25x4";              MinMemGB = 2; Params = "--par=125,4";      Vendor = @("AMD","NVIDIA"); ExtendInterval = 3; AutoPers = $true;  Fee = $DevFee;               Compute = @("GCN4","RDNA2","RDNA3")} #Equihash 125,4,0 (ZelCash)
+    #[PSCustomObject]@{MainAlgorithm = "EquihashR25x5";              MinMemGB = 3; Params = "--par=150,5";      Vendor = @("AMD","NVIDIA"); ExtendInterval = 3; AutoPers = $true;  Fee = $DevFee;               Compute = @("GCN4","RDNA2","RDNA3")} #Equihash 150,5,0 (GRIMM)
     [PSCustomObject]@{MainAlgorithm = "Equihash21x9";               MinMemGB = 2; Params = "--par=210,9";      Vendor = @("AMD","NVIDIA"); ExtendInterval = 3; AutoPers = $true;  Fee = $DevFee;               Compute = @("GCN4","RDNA2","RDNA3")} #Equihash 210,9 (AION)
     [PSCustomObject]@{MainAlgorithm = "EvrProgPow";    DAG = $true; MinMemGB = 2; Params = "--par=ProgPow --pers=EVRMORE-PROGPOW"; Vendor = @("AMD","NVIDIA"); ExtendInterval = 3; AutoPers = $false; Fee = 1.00; Compute = @("RDNA2","RDNA3"); ExcludePoolName = "MiningRigRentals"} #EvrProgPow (EVR)
     [PSCustomObject]@{MainAlgorithm = "FishHash";      DAG = $true; MinMemGB = 4; Params = "--par=fishhash";   Vendor = @("AMD","NVIDIA"); ExtendInterval = 3; AutoPers = $false; Fee = 1.0;                   Compute = @("RDNA2","RDNA3")} #FishHash/IRON
@@ -62,9 +62,9 @@ $Commands = [PSCustomObject[]]@(
     [PSCustomObject]@{MainAlgorithm = "MeowPoW";       DAG = $true; MinMemGB = 2; Params = "--par=meowpow";    Vendor = @("AMD","NVIDIA"); ExtendInterval = 3; AutoPers = $false; Fee = 1.00; Compute = @("RDNA2","RDNA3"); ExcludePoolName = "MiningRigRentals"} #MeowPow/MEWC
     [PSCustomObject]@{MainAlgorithm = "NxlHash";                    MinMemGB = 1; Params = "--par=nxlhash";    Vendor = @("AMD","NVIDIA"); ExtendInterval = 1; AutoPers = $false; Fee = 1.0;                   Compute = @("RDNA2","RDNA3")} #NxlHash/NXL
     [PSCustomObject]@{MainAlgorithm = "Octopus";       DAG = $true; MinMemGB = 2; Params = "--par=octopus";    Vendor = @("NVIDIA"); ExtendInterval = 3; AutoPers = $false; Fee = $DevFee;                     Compute = @()} #Octopus (CFX)
-    [PSCustomObject]@{MainAlgorithm = "ProgPowSero";   DAG = $true; MinMemGB = 2; Params = "--par=ProgPow --pers=sero";  Vendor = @("AMD","NVIDIA"); ExtendInterval = 3; AutoPers = $false; Fee = 1.00;        Compute = @("RDNA2","RDNA3"); ExcludePoolName = "MiningRigRentals"} #ProgPowSero (SERO)
-    [PSCustomObject]@{MainAlgorithm = "ProgPowVeil";   DAG = $true; MinMemGB = 2; Params = "--par=ProgPow --pers=veil";  Vendor = @("AMD","NVIDIA"); ExtendInterval = 3; AutoPers = $false; Fee = 1.00;        Compute = @("RDNA2","RDNA3"); ExcludePoolName = "MiningRigRentals"} #ProgPowVeil (VEIL)
-    [PSCustomObject]@{MainAlgorithm = "ProgPowZ";      DAG = $true; MinMemGB = 2; Params = "--par=ProgPowZ --pers=zano"; Vendor = @("AMD","NVIDIA"); ExtendInterval = 3; AutoPers = $false; Fee = 1.00;        Compute = @("RDNA2","RDNA3"); ExcludePoolName = "MiningRigRentals"} #ProgPowZano (ZANO)
+    [PSCustomObject]@{MainAlgorithm = "ProgPowSero";   DAG = $true; MinMemGB = 2; Params = "--par=ProgPow --pers=SERO";  Vendor = @("AMD","NVIDIA"); ExtendInterval = 3; AutoPers = $false; Fee = 1.00;        Compute = @("RDNA2","RDNA3"); ExcludePoolName = "MiningRigRentals"} #ProgPowSero (SERO)
+    [PSCustomObject]@{MainAlgorithm = "ProgPowVeil";   DAG = $true; MinMemGB = 2; Params = "--par=ProgPow --pers=VEIL";  Vendor = @("AMD","NVIDIA"); ExtendInterval = 3; AutoPers = $false; Fee = 1.00;        Compute = @("RDNA2","RDNA3"); ExcludePoolName = "MiningRigRentals"} #ProgPowVeil (VEIL)
+    [PSCustomObject]@{MainAlgorithm = "ProgPowZ";      DAG = $true; MinMemGB = 2; Params = "--par=ProgPowZ"; Vendor = @("AMD","NVIDIA"); ExtendInterval = 3; AutoPers = $false; Fee = 1.00;        Compute = @("RDNA2","RDNA3"); ExcludePoolName = "MiningRigRentals"} #ProgPowZano (ZANO)
     #[PSCustomObject]@{MainAlgorithm = "PyrinHash";                  MinMemGB = 2; Params = "--par=pyrin";      Vendor = @("AMD","NVIDIA"); ExtendInterval = 1; AutoPers = $false; Fee = 0.8;                   Compute = @("RDNA2","RDNA3")} #PyrinHash/PYI
     [PSCustomObject]@{MainAlgorithm = "UbqHash";       DAG = $true; MinMemGB = 2; Params = "--par=ubqhash";    Vendor = @("AMD","NVIDIA"); ExtendInterval = 3; AutoPers = $false; Fee = 0.75;                  Compute = @("RDNA2","RDNA3")} #UbqHash (UBQ)
     [PSCustomObject]@{MainAlgorithm = "vProgPow";      DAG = $true; MinMemGB = 2; Params = "--par=vProgPow --pers=VeriBlock"; Vendor = @("AMD","NVIDIA"); ExtendInterval = 3; AutoPers = $false; Fee = 1.00;   Compute = @("RDNA2","RDNA3"); ExcludePoolName = "MiningRigRentals"} #vProgPow (VBK)
@@ -166,14 +166,6 @@ foreach ($Miner_Vendor in @("AMD","NVIDIA")) {
         $Miner_Model = $_.Model
         $Device = $Global:DeviceCache.DevicesByTypes."$($_.Vendor)" | Where-Object {$_.Model -eq $Miner_Model}
 
-        $ZilParams    = ""
-
-        if ($false -and $Pools.ZilliqaDual) {
-            if ($ZilWallet = $Pools.ZilliqaDual.Wallet) {
-                $ZilParams = " --url=$($ZilWallet -replace "@","%40")@$($Pools.ZilliqaDual.Host):$($Pools.ZilliqaDual.Port)" 
-            }
-        }
-
         $Commands | Where-Object {$_.Vendor -icontains $Miner_Vendor} | ForEach-Object {
             $First = $true
 
@@ -183,7 +175,7 @@ foreach ($Miner_Vendor in @("AMD","NVIDIA")) {
             $ExcludeCompute = if ($Miner_Vendor -eq "AMD") {$_.ExcludeCompute}
             $Compute = if ($Miner_Vendor -eq "AMD") {$_.Compute}
             
-		    foreach($MainAlgorithm_Norm in @($MainAlgorithm_Norm_0,"$($MainAlgorithm_Norm_0)-$($Miner_Model)","$($MainAlgorithm_Norm_0)-GPU")) {
+		    foreach($MainAlgorithm_Norm in @(Get-PoolAlgorithmKeys -Pools $Pools -Algorithm $MainAlgorithm_Norm_0 -Model $Miner_Model -ExcludePoolName "$($_.ExcludePoolName)")) {
                 if (-not $Pools.$MainAlgorithm_Norm.Host) {continue}
 
                 $MinMemGB = if ($_.DAG) {if ($Pools.$MainAlgorithm_Norm.DagSizeMax) {$Pools.$MainAlgorithm_Norm.DagSizeMax} else {Get-EthDAGSize -CoinSymbol $Pools.$MainAlgorithm_Norm.CoinSymbol -Algorithm $MainAlgorithm_Norm_0 -Minimum $_.MinMemGb}} else {$_.MinMemGb}
@@ -198,9 +190,9 @@ foreach ($Miner_Vendor in @("AMD","NVIDIA")) {
                     }
                     $PersCoin = Get-EquihashCoinPers $Pools.$MainAlgorithm_Norm.CoinSymbol -Default "auto"
 				    $Pool_Port = if ($Pools.$MainAlgorithm_Norm.Ports -ne $null -and $Pools.$MainAlgorithm_Norm.Ports.GPU) {$Pools.$MainAlgorithm_Norm.Ports.GPU} else {$Pools.$MainAlgorithm_Norm.Port}
-                    $Stratum = @()
-                    if ($Pools.$MainAlgorithm_Norm.SSL) {$Stratum += "ssl"}
-                    if ($Pools.$MainAlgorithm_Norm.Host -match "miningrigrentals" -and $MainAlgorithm_Norm_0 -match "^etc?hash") {$Stratum += "stratum2"}
+                    $Stratum = [System.Collections.Generic.List[string]]::new()
+                    if ($Pools.$MainAlgorithm_Norm.SSL) {[void]$Stratum.Add("ssl")}
+                    if ($Pools.$MainAlgorithm_Norm.Host -match "miningrigrentals" -and $MainAlgorithm_Norm_0 -match "^etc?hash") {[void]$Stratum.Add("stratum2")}
 
                     if ($SecondAlgorithm_Norm_0) {
 
@@ -222,16 +214,16 @@ foreach ($Miner_Vendor in @("AMD","NVIDIA")) {
                                 if ($Pools.$SecondAlgorithm_Norm.Host -and $Pools.$SecondAlgorithm_Norm.User -and (-not $_.ExcludePoolName -or $Pools.$SecondAlgorithm_Norm.Host -notmatch $_.ExcludePoolName) -and (-not $_.CoinSymbol -or $_.CoinSymbol -icontains $Pools.$SecondAlgorithm_Norm.CoinSymbol) -and (-not $_.ExcludeCoinSymbol -or $_.ExcludeCoinSymbol -inotcontains $Pools.$SecondAlgorithm_Norm.CoinSymbol)) {
 
                                     $SecondPool_Port = if ($Pools.$SecondAlgorithm_Norm.Ports -ne $null -and $Pools.$SecondAlgorithm_Norm.Ports.GPU) {$Pools.$SecondAlgorithm_Norm.Ports.GPU} else {$Pools.$SecondAlgorithm_Norm.Port}
-                                    $Stratum2 = @()
-                                    if ($Pools.$SecondAlgorithm_Norm.SSL) {$Stratum2 += "ssl"}
-                                    if ($Pools.$SecondAlgorithm_Norm.Host -match "miningrigrentals" -and $SecondAlgorithm_Norm_0 -match "^etc?hash") {$Stratum2 += "stratum2"}
+                                    $Stratum2 = [System.Collections.Generic.List[string]]::new()
+                                    if ($Pools.$SecondAlgorithm_Norm.SSL) {[void]$Stratum2.Add("ssl")}
+                                    if ($Pools.$SecondAlgorithm_Norm.Host -match "miningrigrentals" -and $SecondAlgorithm_Norm_0 -match "^etc?hash") {[void]$Stratum2.Add("stratum2")}
 
 				                    [PSCustomObject]@{
 					                    Name           = $Miner_Name_Dual
 					                    DeviceName     = $Miner_Device.Name
 					                    DeviceModel    = $Miner_Model
 					                    Path           = $Path
-					                    Arguments      = "--$($Miner_Vendor.ToLower()) --telemetry=`$mport -cd $($DeviceIDsAll) --url=$(if ($Stratum) {"$($Stratum -join '+')://"})$($Pools.$MainAlgorithm_Norm.User -replace "@","%40")@$($Pools.$MainAlgorithm_Norm.Host):$($Pool_Port)$(if ($Pools.$MainAlgorithm_Norm.Pass) {" -p $($Pools.$MainAlgorithm_Norm.Pass)"})$(if ($Pools.$MainAlgorithm_Norm.Worker -and $Pools.$MainAlgorithm_Norm.User -eq $Pools.$MainAlgorithm_Norm.Wallet) {" --worker=$($Pools.$MainAlgorithm_Norm.Worker)"})$(if ($PersCoin -and ($_.AutoPers -or $PersCoin -ne "auto")) {" --pers=$($PersCoin)"}) --gpu-line --minimal --extra --latency$(if (-not $Session.Config.ShowMinerWindow) {" --nocolor"})$(if ($Pools.$MainAlgorithm_Norm.Host -notmatch "xxxMiningRigRentals" -and $PersCoin -ne "auto") {" --smart-pers"}) $($_.Params) --nohttpheaders$($ZilParams) --url2=$(if ($Stratum2) {"$($Stratum2 -join '+')://"})$($Pools.$SecondAlgorithm_Norm.User -replace "@","%40")@$($Pools.$SecondAlgorithm_Norm.Host):$($SecondPool_Port) $($DeviceIntensitiesAll)"
+					                    Arguments      = "--$($Miner_Vendor.ToLower()) --telemetry=`$mport -cd $($DeviceIDsAll) --url=$(if ($Stratum) {"$($Stratum -join '+')://"})$($Pools.$MainAlgorithm_Norm.User -replace "@","%40")@$($Pools.$MainAlgorithm_Norm.Host):$($Pool_Port)$(if ($Pools.$MainAlgorithm_Norm.Pass) {" -p $($Pools.$MainAlgorithm_Norm.Pass)"})$(if ($Pools.$MainAlgorithm_Norm.Worker -and $Pools.$MainAlgorithm_Norm.User -eq $Pools.$MainAlgorithm_Norm.Wallet) {" --worker=$($Pools.$MainAlgorithm_Norm.Worker)"})$(if ($PersCoin -and ($_.AutoPers -or $PersCoin -ne "auto")) {" --pers=$($PersCoin)"}) --gpu-line --minimal --extra --latency$(if (-not $Session.Config.ShowMinerWindow) {" --nocolor"})$(if ($Pools.$MainAlgorithm_Norm.Host -notmatch "xxxMiningRigRentals" -and $PersCoin -ne "auto") {" --smart-pers"}) $($_.Params) --nohttpheaders --url2=$(if ($Stratum2) {"$($Stratum2 -join '+')://"})$($Pools.$SecondAlgorithm_Norm.User -replace "@","%40")@$($Pools.$SecondAlgorithm_Norm.Host):$($SecondPool_Port) $($DeviceIntensitiesAll)"
 					                    HashRates      = [PSCustomObject]@{
                                                             $MainAlgorithm_Norm = $($Global:StatsCache."$($Miner_Name_Dual)_$($MainAlgorithm_Norm_0)_HashRate".Week * $(if ($_.Penalty) {1-$_.Penalty/100} else {1}))
                                                             $SecondAlgorithm_Norm = $($Global:StatsCache."$($Miner_Name_Dual)_$($SecondAlgorithm_Norm_0)_HashRate".Week * $(if ($_.Penalty) {1-$_.Penalty/100} else {1}))
@@ -240,6 +232,7 @@ foreach ($Miner_Vendor in @("AMD","NVIDIA")) {
 					                    Port           = $Miner_Port
                                         FaultTolerance = $_.FaultTolerance
 					                    ExtendInterval = $_.ExtendInterval
+                                        SkipSeconds    = 40
                                         Penalty        = 0
 					                    DevFee         = [PSCustomObject]@{
 								                            ($MainAlgorithm_Norm) = $_.Fee
@@ -254,7 +247,6 @@ foreach ($Miner_Vendor in @("AMD","NVIDIA")) {
                                         Benchmarked    = $Global:StatsCache."$($Miner_Name_Dual)_$($MainAlgorithm_Norm_0)_HashRate".Benchmarked
                                         LogFile        = $Global:StatsCache."$($Miner_Name_Dual)_$($MainAlgorithm_Norm_0)_HashRate".LogFile
                                         ExcludePoolName= $_.ExcludePoolName
-                                        DualZIL        = $ZilParams -ne ""
 				                    }
                                 }
                             }
@@ -265,12 +257,13 @@ foreach ($Miner_Vendor in @("AMD","NVIDIA")) {
 					        DeviceName     = $Miner_Device.Name
 					        DeviceModel    = $Miner_Model
 					        Path           = $Path
-					        Arguments      = "--$($Miner_Vendor.ToLower()) --telemetry=`$mport -cd $($DeviceIDsAll) --url=$(if ($Stratum) {"$($Stratum -join '+')://"})$($Pools.$MainAlgorithm_Norm.User -replace "@","%40")@$($Pools.$MainAlgorithm_Norm.Host):$($Pool_Port)$(if ($Pools.$MainAlgorithm_Norm.Pass) {" -p $($Pools.$MainAlgorithm_Norm.Pass)"})$(if ($Pools.$MainAlgorithm_Norm.Worker -and $Pools.$MainAlgorithm_Norm.User -eq $Pools.$MainAlgorithm_Norm.Wallet) {" --worker=$($Pools.$MainAlgorithm_Norm.Worker)"})$(if ($PersCoin -and ($_.AutoPers -or $PersCoin -ne "auto")) {" --pers=$($PersCoin)"}) --gpu-line --minimal --extra --latency$(if (-not $Session.Config.ShowMinerWindow) {" --nocolor"})$(if ($Pools.$MainAlgorithm_Norm.Host -notmatch "xxxMiningRigRentals" -and $PersCoin -ne "auto") {" --smart-pers"}) $($_.Params) --nohttpheaders$($ZilParams)"
+					        Arguments      = "--$($Miner_Vendor.ToLower()) --telemetry=`$mport --nonvml -cd $($DeviceIDsAll) --url=$(if ($Stratum) {"$($Stratum -join '+')://"})$($Pools.$MainAlgorithm_Norm.User -replace "@","%40")@$($Pools.$MainAlgorithm_Norm.Host):$($Pool_Port)$(if ($Pools.$MainAlgorithm_Norm.Pass) {" -p $($Pools.$MainAlgorithm_Norm.Pass)"})$(if ($Pools.$MainAlgorithm_Norm.Worker -and $Pools.$MainAlgorithm_Norm.User -eq $Pools.$MainAlgorithm_Norm.Wallet) {" --worker=$($Pools.$MainAlgorithm_Norm.Worker)"})$(if ($PersCoin -and ($_.AutoPers -or $PersCoin -ne "auto")) {" --pers=$($PersCoin)"}) --gpu-line --minimal --extra --latency$(if (-not $Session.Config.ShowMinerWindow) {" --nocolor"})$(if ($Pools.$MainAlgorithm_Norm.Host -notmatch "xxxMiningRigRentals" -and $PersCoin -ne "auto") {" --smart-pers"}) $($_.Params) --nohttpheaders"
 					        HashRates      = [PSCustomObject]@{$MainAlgorithm_Norm = $($Global:StatsCache."$($Miner_Name)_$($MainAlgorithm_Norm_0)_HashRate".Week)}
 					        API            = "MiniZ"
 					        Port           = $Miner_Port
                             FaultTolerance = $_.FaultTolerance
 					        ExtendInterval = $_.ExtendInterval
+                            SkipSeconds    = 40
                             Penalty        = 0
 					        DevFee         = $_.Fee
 					        Uri            = $Uri
@@ -282,7 +275,6 @@ foreach ($Miner_Vendor in @("AMD","NVIDIA")) {
                             Benchmarked    = $Global:StatsCache."$($Miner_Name)_$($MainAlgorithm_Norm_0)_HashRate".Benchmarked
                             LogFile        = $Global:StatsCache."$($Miner_Name)_$($MainAlgorithm_Norm_0)_HashRate".LogFile
                             ExcludePoolName = $_.ExcludePoolName
-                            DualZIL        = $ZilParams -ne ""
 				        }
                     }
 			    }

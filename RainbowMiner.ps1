@@ -52,6 +52,8 @@ param(
     [Parameter(Mandatory = $false)]
     [Array]$Currency = ("BTC", "USD"), #i.e. GBP,EUR,ZEC,ETH etc.
     [Parameter(Mandatory = $false)]
+    [Array]$ExcludeCurrencyRateFromCoinbase = ("BIT","PRL"), #Coinbase is the main currency provider, only if a symbol is not delivered from this API it will get called from api.rbminer.net - if coinbase delivers wrong values for a coin, please add the symbol here
+    [Parameter(Mandatory = $false)]
     [Int]$Donate = 24, #Minutes per Day
     [Parameter(Mandatory = $false)]
     [String]$Proxy = "", #i.e http://192.0.0.1:8080
@@ -80,6 +82,10 @@ param(
     [Double]$MinerStatusMaxTemp = 90.0, #enter a maximum temperature for triggering a notification
     [Parameter(Mandatory = $false)]
     [Double]$DiskMinGB = 5.0, #enter a minimum hard drive disk space (in GB) for triggering a notification
+    [Parameter(Mandatory = $false)]
+    [Double]$MinFreeMemoryGB = 1.5, #RAM in GB to keep free for the system and RainbowMiner. Algorithms with a known large memory footprint (RandomX family) are skipped on machines that cannot hold them in physical RAM (0=disable the check)
+    [Parameter(Mandatory = $false)]
+    [String]$GPUReservedVRAMGB = "", #VRAM in GB reserved per GPU, subtracted before miners are matched against their memory requirements. Leave empty to auto-detect via nvidia-smi at start, 0 = no reservation, any other value = flat per-GPU reservation
     [Parameter(Mandatory = $false)]
     [Int]$MinerStatusMaxCrashesPerHour = 5, #enter the maximum crashes per hour allowed, before triggering a notification
     [Parameter(Mandatory = $false)]
@@ -137,6 +143,8 @@ param(
     [Parameter(Mandatory = $false)]
     [Switch]$DisableZeroWattMiners = $false,
     [Parameter(Mandatory = $false)]
+    [Switch]$EnableRandomX1GBPages = $false, #Allow miners to enable 1GB Pages for RandomX like algorithms (currently SrbMinerMulti only)
+    [Parameter(Mandatory = $false)]
     [int]$APIport = 4000,
     [Parameter(Mandatory = $false)]
     [String]$APIuser = "",
@@ -188,6 +196,12 @@ param(
     [Double]$PowerCPUtdp = 0, # TDP/maximum power of current CPU, absolute in W
     [Parameter(Mandatory = $false)]
     [String]$OctopusTariffCode = '', # UK powersupplier Octopus with variable power prices
+    [Parameter(Mandatory = $false)]
+    [String]$PowerPriceApi = '', # Generic URL that should return a powerprice
+    [Parameter(Mandatory = $false)]
+    [String]$PowerPriceApiValue = '', # Leave empty if the PowerPriceUrl replies with number only. If json format, use dot notation (e.g. prices[1].value)
+    [Parameter(Mandatory = $false)]
+    [Int]$PowerPriceApiInterval = 0, # interval in seconds to call the PowerPriceApi
     [Parameter(Mandatory = $false)]
     [Double]$FixedCostPerDay = 0, # average fixed cost per day in USD, EUR or other (set currency with parameter PowerPriceCurrency)
     [Parameter(Mandatory = $false)]
@@ -269,6 +283,10 @@ param(
     [Parameter(Mandatory = $false)]
     [int]$PoolAccuracyWeight = 15, #Adjust weight of pools accuracy on the profit comparison in % (0..100, 0=disable)
     [Parameter(Mandatory = $false)]
+    [Switch]$EnablePoolAlternates = $true, #if set to 1, a miner that cannot use the most profitable pool of an algorithm will be offered the best pool it can use
+    [Parameter(Mandatory = $false)]
+    [int]$MaxPoolAlternates = 2, #if EnablePoolAlternates: maximum number of alternate pools offered per algorithm (0=disable)
+    [Parameter(Mandatory = $false)]
     [int]$MinerFaultToleranceGPU = 10, #Adjust the default GPU miner tolerance in % (0..100)
     [Parameter(Mandatory = $false)]
     [int]$MinerFaultToleranceCPU = 25, #Adjust the default CPU miner tolerance in % (0..100)
@@ -335,6 +353,14 @@ param(
     [Parameter(Mandatory = $false)]
     [Int]$MaxCrashesDuringBenchmark = 2, #maximum number of minercrashes until benchmark fails
     [Parameter(Mandatory = $false)]
+    [Switch]$EnableAutoDisableMiners = $false, #if set to 1, a miner/algorithm will be disabled automatically after crashing MaxCrashesBeforeDisable times within CrashTrackingWindowMinutes
+    [Parameter(Mandatory = $false)]
+    [Int]$MaxCrashesBeforeDisable = 5, #if EnableAutoDisableMiners: number of crashes within CrashTrackingWindowMinutes, until a miner/algorithm gets disabled
+    [Parameter(Mandatory = $false)]
+    [Int]$CrashTrackingWindowMinutes = 60, #if EnableAutoDisableMiners: sliding window in minutes for counting miner crashes
+    [Parameter(Mandatory = $false)]
+    [Int]$AutoDisableResetHours = 24, #if EnableAutoDisableMiners: re-enable an auto-disabled miner/algorithm after this many hours (0=never re-enable)
+    [Parameter(Mandatory = $false)]
     [String]$ServerName = "", # if RunMode=client: this is the name of the main RainbowMiner server
     [Parameter(Mandatory = $false)]
     [int]$ServerPort = 4000,  # if RunMode=server or client: main RainbowMiner server port address
@@ -367,6 +393,8 @@ param(
     [Parameter(Mandatory = $false)]
     [Switch]$EnableDebugMode = $false,
     [Parameter(Mandatory = $false)]
+    [Switch]$EnableDebugTimers = $false, # write per-round timing files Logs/timerpools|timerminers|timerselect.json without full debug mode
+    [Parameter(Mandatory = $false)]
     [Switch]$EnableVerboseAsyncloader = $false,
     [Parameter(Mandatory = $false)]
     [Switch]$EnableRestartComputer = $false, # enable automatic computer restart, if one of the following conditions is met
@@ -385,6 +413,8 @@ param(
     [Parameter(Mandatory = $false)]
     [String]$CovalentAPIKey = "",
     [Parameter(Mandatory = $false)]
+    [String]$UserAgent = "", # leave empty to use the built-in browser user agent, or enter a custom one, if your provider/Cloudflare blocks the default
+    [Parameter(Mandatory = $false)]
     [String]$LogLevel = "Info" #select log level from "Debug", "Info", "Warn", "Error" and "Silent"
 )
 
@@ -395,14 +425,18 @@ if ($MyInvocation.MyCommand.Path) {Set-Location (Split-Path $MyInvocation.MyComm
 
 Import-Module .\Modules\Include.psm1
 
+# sync helper binaries (7-Zip, curl, GetCPU, MSI Afterburner wrapper) from .\Includes\dist
+# to their live positions - must run before anything executes one of them
+try {Update-HelperBinaries} catch {}
+
 Initialize-Session
 
-$Session.Version         = "4.9.9.9"
+$Session.Version         = "5.0.2.9"
 $Session.MainWindowTitle = "RainbowMiner v$($Session.Version)"
 $Session.SetupOnly       = $SetupOnly
 $Session.LogLevel        = $LogLevel
 
-$Session.SupportedPSVersion = "7.2.24"
+$Session.SupportedPSVersion = "7.6.5"
 
 $Session.OpenCLPlatformSorting = @()
 
@@ -498,7 +532,7 @@ if ($IsWindows -and (Get-Command "Unblock-File" -ErrorAction SilentlyContinue)) 
 [hashtable]$Session.DefaultValues = @{}
 
 if (-not $psISE) {$MyCommandParameters = $MyInvocation.MyCommand.Parameters.Keys | Where-Object {$_ -and $_ -ne "ConfigFile" -and (Get-Variable $_ -ErrorAction Ignore)}}
-if (-not $MyCommandParameters) {$MyCommandParameters = @("Wallet","WorkerName","Interval","Region","DefaultPoolRegion","SSL","DeviceName","ExcludeDeviceName","Algorithm","MinerName","ExcludeAlgorithm","ExcludeMinerName","PreferMinerName","PreferMinerMargin","PoolName","ExcludePoolName","ExcludeCoin","ExcludeCoinSymbol","OpenCLPlatformSorting","Currency","Donate","Proxy","ProxyUsername","ProxyPassword","Delay","Watchdog","ExcludeFromWatchdog","MinerStatusUrl","MinerStatusKey","ShowRemoteMachines","MinerStatusEmail","PushOverUserKey","MinerStatusMaxTemp","DiskMinGB","MinerStatusMaxCrashesPerHour","SwitchingPrevention","PoolSwitchingHysteresis","MinerSwitchingHysteresis","MaxRejectedShareRatio","MaxAllowedLuck","MaxTimeSinceLastBlock","MinComboOverSingleRatio","ShowMinerWindow","FastestMinerOnly","IgnoreFees","ExcludeMinersWithFee","DisableUnprofitableAlgolist","DisableUnprofitableCpuAlgolist","EnableNeverprofitableAlgos","EnableCheckMiningConflict","EnableCurl","EnableEthashZombieMode","ShowPoolBalances","ShowPoolBalancesDetails","ShowPoolBalancesExcludedPools","ExcludeCoinsymbolBalances","ShowWalletBalances","WalletBalances","DisableDualMining","EnableDualMiningDuringRentals","DisableZeroWattMiners","APIport","APIuser","APIpassword","APIauth","APIthreads","APIlockConfig","APImaxLoginAttemps","APIblockLoginAttemptsTime","APIallowIPs","RebootOnGPUFailure","MiningMode","MSIApath","MSIAprofile","UIstyle","UIsorting","UIFullBenchmarkList","UseTimeSync","WebsitesForOnlineCheck","PowerPrice","PowerPriceCurrency","UsePowerPrice","PowerOffset","PowerOffsetPercent","PowerCPUtdp","OctopusTariffCode","FixedCostPerDay","ProfitabilityLevel","CheckProfitability","DisableExtendInterval","EthPillEnable","EthPillEnableMTP","EnableOCProfiles","EnableOCVoltage","EnableOCLinuxSetAllPStates","EnableOCLinuxForcePState","OCResetInterval","EnableOCFullReset","EnableLinuxMinerNiceness","LinuxMinerNiceness","EnableLinuxHeadless","EnableAutoUpdate","EnableAutoBenchmark","AutoBenchmarkMode","EnableAutoMinerPorts","StaticCPUMinerPort","StaticGPUMinerPort","EnableAutoAdjustAffinity","DisableMSIAmonitor","CPUMiningThreads","CPUMiningAffinity","GPUMiningAffinity","DisableAPI","DisableAsyncLoader","DisableInternetCheck","EnableMinerStatus","EnableFastSwitching","ForceStablePrice","EnableMinersAsRoot","NVSMIpath","MiningPriorityCPU","MiningPriorityGPU","AutoexecPriority","HashrateWeight","HashrateWeightStrength","PoolAccuracyWeight","MinerFaultToleranceGPU","MinerFaultToleranceCPU","BalanceUpdateMinutes","ProfitSpikeProtection","Quickstart","PoolDataWindow","PoolStatAverage","PoolStatAverageStable","EnableErrorRatio","MaxErrorRatio","EnableAutoAlgorithmAdd","EnableAlgorithmVariants","EnableAlgorithmMapping","EnableResetVega","EnableMiningHeatControl","MiningHeatControl","MaxActivityDays","MaxLogfileDays","MaxDownloadfileDays","MaxCachefileDays","StartPaused","EnableUpdateDuringPause","EnableUpdateWhenScheduled","EnablePauseOnActivity","EnablePauseOnBattery","ResumeOnInactivitySeconds","EnableFastlaneBenchmark","FastlaneBenchmarkTypeCPU","FastlaneBenchmarkTypeGPU","EnableFastlaneBenchmarkMissing","MinimumMiningIntervals","BenchmarkInterval","MaxCrashesDuringBenchmark","ServerName","ServerPort","ServerUser","ServerPassword","EnableServerConfig","EnableServerPools","ServerConfigName","GroupName","ExcludeServerConfigVars","EnableServerExcludeList","EnableMinerBackups","EnableKeepDownloads","RunMode","SetupOnly","EnableDebugMode","EnableVerboseAsyncloader","EnableRestartComputer","RestartComputerHours","RestartRBMTimespan","RestartRBMMemory","LinuxDisplay","LinuxXAuthority","LinuxMinerTerminal","CovalentAPIKey","LogLevel")}
+if (-not $MyCommandParameters) {$MyCommandParameters = @("Wallet","WorkerName","Interval","Region","DefaultPoolRegion","SSL","DeviceName","ExcludeDeviceName","Algorithm","MinerName","ExcludeAlgorithm","ExcludeMinerName","PreferMinerName","PreferMinerMargin","PoolName","ExcludePoolName","ExcludeCoin","ExcludeCoinSymbol","OpenCLPlatformSorting","Currency","ExcludeCurrencyRateFromCoinbase","Donate","Proxy","ProxyUsername","ProxyPassword","Delay","Watchdog","ExcludeFromWatchdog","MinerStatusUrl","MinerStatusKey","ShowRemoteMachines","MinerStatusEmail","PushOverUserKey","MinerStatusMaxTemp","DiskMinGB","MinFreeMemoryGB","GPUReservedVRAMGB","MinerStatusMaxCrashesPerHour","SwitchingPrevention","PoolSwitchingHysteresis","MinerSwitchingHysteresis","MaxRejectedShareRatio","MaxAllowedLuck","MaxTimeSinceLastBlock","MinComboOverSingleRatio","ShowMinerWindow","FastestMinerOnly","IgnoreFees","ExcludeMinersWithFee","DisableUnprofitableAlgolist","DisableUnprofitableCpuAlgolist","EnableNeverprofitableAlgos","EnableCheckMiningConflict","EnableCurl","EnableEthashZombieMode","ShowPoolBalances","ShowPoolBalancesDetails","ShowPoolBalancesExcludedPools","ExcludeCoinsymbolBalances","ShowWalletBalances","WalletBalances","DisableDualMining","EnableDualMiningDuringRentals","DisableZeroWattMiners","EnableRandomX1GBPages","APIport","APIuser","APIpassword","APIauth","APIthreads","APIlockConfig","APImaxLoginAttemps","APIblockLoginAttemptsTime","APIallowIPs","RebootOnGPUFailure","MiningMode","MSIApath","MSIAprofile","UIstyle","UIsorting","UIFullBenchmarkList","UseTimeSync","WebsitesForOnlineCheck","PowerPrice","PowerPriceCurrency","UsePowerPrice","PowerOffset","PowerOffsetPercent","PowerCPUtdp","OctopusTariffCode","PowerPriceApi","PowerPriceApiValue","PowerPriceApiInterval","FixedCostPerDay","ProfitabilityLevel","CheckProfitability","DisableExtendInterval","EthPillEnable","EthPillEnableMTP","EnableOCProfiles","EnableOCVoltage","EnableOCLinuxSetAllPStates","EnableOCLinuxForcePState","OCResetInterval","EnableOCFullReset","EnableLinuxMinerNiceness","LinuxMinerNiceness","EnableLinuxHeadless","EnableAutoUpdate","EnableAutoBenchmark","AutoBenchmarkMode","EnableAutoMinerPorts","StaticCPUMinerPort","StaticGPUMinerPort","EnableAutoAdjustAffinity","DisableMSIAmonitor","CPUMiningThreads","CPUMiningAffinity","GPUMiningAffinity","DisableAPI","DisableAsyncLoader","DisableInternetCheck","EnableMinerStatus","EnableFastSwitching","ForceStablePrice","EnableMinersAsRoot","NVSMIpath","MiningPriorityCPU","MiningPriorityGPU","AutoexecPriority","HashrateWeight","HashrateWeightStrength","PoolAccuracyWeight","EnablePoolAlternates","MaxPoolAlternates","MinerFaultToleranceGPU","MinerFaultToleranceCPU","BalanceUpdateMinutes","ProfitSpikeProtection","Quickstart","PoolDataWindow","PoolStatAverage","PoolStatAverageStable","EnableErrorRatio","MaxErrorRatio","EnableAutoAlgorithmAdd","EnableAlgorithmVariants","EnableAlgorithmMapping","EnableResetVega","EnableMiningHeatControl","MiningHeatControl","MaxActivityDays","MaxLogfileDays","MaxDownloadfileDays","MaxCachefileDays","StartPaused","EnableUpdateDuringPause","EnableUpdateWhenScheduled","EnablePauseOnActivity","EnablePauseOnBattery","ResumeOnInactivitySeconds","EnableFastlaneBenchmark","FastlaneBenchmarkTypeCPU","FastlaneBenchmarkTypeGPU","EnableFastlaneBenchmarkMissing","MinimumMiningIntervals","BenchmarkInterval","MaxCrashesDuringBenchmark","EnableAutoDisableMiners","MaxCrashesBeforeDisable","CrashTrackingWindowMinutes","AutoDisableResetHours","ServerName","ServerPort","ServerUser","ServerPassword","EnableServerConfig","EnableServerPools","ServerConfigName","GroupName","ExcludeServerConfigVars","EnableServerExcludeList","EnableMinerBackups","EnableKeepDownloads","RunMode","SetupOnly","EnableDebugMode","EnableDebugTimers","EnableVerboseAsyncloader","EnableRestartComputer","RestartComputerHours","RestartRBMTimespan","RestartRBMMemory","LinuxDisplay","LinuxXAuthority","LinuxMinerTerminal","CovalentAPIKey","UserAgent","LogLevel")}
 $MyCommandParameters | Foreach-Object {
     if ($var = Get-Variable $_ -ErrorAction Ignore) {
         if ($var.Value -is [switch]) {
@@ -510,9 +544,11 @@ $MyCommandParameters | Foreach-Object {
 }
 
 if ($IsWindows -and $Session.IsAdmin) {
-    if ((Get-Command "Get-MpPreference" -ErrorAction Ignore)) {
+    if (Test-Path "$env:Windir\System32\WindowsPowerShell\v1.0\Modules\Defender\Defender.psd1") {
         try {
-            if ((Get-MpPreference).ExclusionPath -notcontains (Convert-Path .)) {
+            # read the exclusion list via CIM: Get-MpPreference would load the Defender module in-process (and spawn a persistent WinPS compat process under pwsh)
+            $MpPreference = Get-CimInstance -Namespace "root\Microsoft\Windows\Defender" -ClassName "MSFT_MpPreference" -ErrorAction Stop
+            if ($MpPreference -and $MpPreference.ExclusionPath -notcontains (Convert-Path .)) {
                 Start-Process (@{desktop = "powershell"; core = "pwsh"}.$PSEdition) "-Command Import-Module '$env:Windir\System32\WindowsPowerShell\v1.0\Modules\Defender\Defender.psd1'$(if ($Session.IsCore) {" -SkipEditionCheck"}); Add-MpPreference -ExclusionPath '$(Convert-Path .)'" -Verb runAs -WindowStyle Hidden
             }
         } catch {
@@ -578,7 +614,11 @@ if (-not $psISE -and $Session.LogLevel -ne "Silent") {
 }
 
 if ($IsWindows) {
-    if ($Session.AutoUpdate -and -not $psISE) {Exit 999}
+    if (-not $psISE) {
+        if ($Session.AutoUpdate) {Exit 999}
+        if ($Session.Restart -and $env:RBM_STARTLOOP) {Exit 998}
+        Exit 0
+    }
 } else {
     Exit $(if ($Session.AutoUpdate -or $Session.Restart) {99} else {0})
 }

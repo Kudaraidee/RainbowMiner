@@ -6,6 +6,10 @@ cuda_urls=(
     "https://github.com/RainbowMiner/miner-binaries/releases/download/v2025.07.02-cudalibs/cudalibs-linux-12.6.85.tar.gz"
     "https://github.com/RainbowMiner/miner-binaries/releases/download/v2025.07.02-cudalibs/cudalibs-linux-12.8.83.tar.gz"
     "https://github.com/RainbowMiner/miner-binaries/releases/download/v2025.07.02-cudalibs/cudalibs-linux-12.9.86.tar.gz"
+    "https://github.com/RainbowMiner/miner-binaries/releases/download/v2026.04.04-cudalibs/cudalibs-linux-13.0.88.tar.gz"
+    "https://github.com/RainbowMiner/miner-binaries/releases/download/v2026.04.04-cudalibs/cudalibs-linux-13.1.115.tar.gz"
+    "https://github.com/RainbowMiner/miner-binaries/releases/download/v2026.04.04-cudalibs/cudalibs-linux-13.2.51.tar.gz"
+
 )
 
 # Check for required commands
@@ -49,16 +53,28 @@ while getopts "fq" opt; do
     esac
 done
 
-# Prepare paths
-target_folder="$(dirname "$0")/../lib"
+# Prepare paths (absolute, so the caller's working directory does not matter)
+script_path="$0"
+case "$script_path" in
+    *\\*) script_path="$(printf '%s\n' "$script_path" | tr '\\' '/')" ;;
+esac
+script_dir="$(CDPATH= cd -- "$(dirname -- "$script_path")" 2>/dev/null && pwd -P)"
+[ -n "$script_dir" ] || script_dir="$(pwd)"
+target_folder="$script_dir/../lib"
 mkdir -p "$target_folder"
+# canonicalize: wget2 (Fedora/Nobara) refuses -O paths that contain a .. segment
+target_folder="$(CDPATH= cd -- "$target_folder" 2>/dev/null && pwd -P)"
+if [ -z "$target_folder" ]; then
+    printf "Error: cannot resolve the lib folder\n" >&2
+    exit 1
+fi
 
 
 download_and_install() {
     local url="$1"
     local index="$2"
     local uri_file="$target_folder/_uri${index}.txt"
-    [ "$index" -eq 1 ] && uri_file="$target_folder/_uri.txt"  # Ausnahme für erste URL
+    [ "$index" -eq 1 ] && uri_file="$target_folder/_uri.txt"  # Ausnahme fÃ¼r erste URL
 
     local needs_install=0
     if [ "$install_nv" -eq 1 ]; then
@@ -72,9 +88,10 @@ download_and_install() {
     if [ "$needs_install" -eq 1 ]; then
         [ "$quiet" -eq 0 ] && printf "\nDownloading %s\n" "$url"
         local archive="$target_folder/cudalibs$index.tar.gz"
-        local wget_opts="-O $archive"
-        [ "$quiet" -eq 1 ] && wget_opts="-q $wget_opts"
-        if wget $wget_opts "$url"; then
+        local wget_quiet=""
+        [ "$quiet" -eq 1 ] && wget_quiet="-q"
+        # keep -O and the path quoted - an unquoted expansion breaks on paths with spaces
+        if wget $wget_quiet -O "$archive" "$url"; then
             [ "$quiet" -eq 0 ] && printf "Unpacking archive #%d ..\n" "$index"
             if tar -xzf "$archive" -C "$target_folder"; then
                 echo "$url" > "$uri_file"

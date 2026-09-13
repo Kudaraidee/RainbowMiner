@@ -106,7 +106,9 @@ function Start-Setup {
         [Parameter(Mandatory = $true)]
         [hashtable]$ConfigFiles,
         [Parameter(Mandatory = $false)]
-        [Switch]$SetupOnly = $false
+        [Switch]$SetupOnly = $false,
+        [Parameter(Mandatory = $false)]
+        [hashtable]$Parameters = @{}
     )
 
     $RunSetup = $true
@@ -238,7 +240,7 @@ function Start-Setup {
                 $Config.APIuser = ($Session.MachineName -replace "[^a-z0-9]+").ToLower()
                 $lCharSet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz".ToCharArray()
                 $nCharSet = "0123456789".ToCharArray()
-                $sCharSet = "/*-+,!?=()@;:._".ToCharArray()
+                $sCharSet = "*-!()._".ToCharArray() # URL-safe specials only - chars like + ? = ; : / @ , break url-encoded transports (issue #3095)
                 $Config.APIpassword = ((1..10 | %{$lCharset | Get-Random}) + (1..3 | %{$nCharset | Get-Random}) + (1..2 | %{$sCharset | Get-Random}) | Sort-Object {Get-Random}) -join ""
             }
 
@@ -295,11 +297,11 @@ function Start-Setup {
 
             Switch ($SetupType) {
                 "W" {$GlobalSetupName = "Wallet";$GlobalSetupSteps.AddRange(@("wallet","nicehash","nicehash2","nicehashorganizationid","nicehashapikey","nicehashapisecret","mrr","mrrapikey","mrrapisecret")) > $null}
-                "C" {$GlobalSetupName = "Common";$GlobalSetupSteps.AddRange(@("workername","miningmode","devicename","excludedevicename","devicenameend","cpuminingthreads","cpuminingaffinity","enableautoadjustaffinity","gpuminingaffinity","pooldatawindow","enableerrorratio","maxerrorratio","poolstataverage","poolstataveragestable","hashrateweight","hashrateweightstrength","poolaccuracyweight","minerfaulttolerancegpu","minerfaulttolerancecpu","defaultpoolregion","region","currency","enableminerstatus","minerstatusurl","minerstatuskey","showremotemachines","minerstatusemail","pushoveruserkey","minerstatusmaxtemp","minerstatusmaxcrashesperhour","diskmingb","uistyle","uisorting","uiprofitcolumns","uifullbenchmarklist","fastestmineronly","showpoolbalances","showpoolbalancesdetails","showpoolbalancesexcludedpools","excludecoinsymbolbalances","showwalletbalances","walletbalances","enableminingheatcontrol","miningheatcontrol","enablealgorithmmapping","showminerwindow","ignorefees","enableocprofiles","enableocvoltage","enableoclinuxsetallpstates","enableoclinuxforcepstate","ocresetinterval","enableocfullreset","enablelinuxheadless","linuxdisplay","linuxxauthority","linuxminerterminal","enableminersasroot","enableresetvega","msia","msiapath","nvsmipath","ethpillenable","ethpillenablemtp","enableautominerports","staticcpuminerport","staticgpuminerport","enableautoupdate","enableautoalgorithmadd","enableautobenchmark","autobenchmarkmode","profitspikeprotection")) > $null}
-                "E" {$GlobalSetupName = "Energycost";$GlobalSetupSteps.AddRange(@("powerpricecurrency","powerprice","poweroffset","poweroffsetpercent","powercputdp","octopustariffcode","fixedcostperday","usepowerprice","checkprofitability","profitabilitylevel")) > $null}
-                "S" {$GlobalSetupName = "Selection";$GlobalSetupSteps.AddRange(@("poolname","minername","excludeminername","excludeminerswithfee","preferminername","preferminermargin","disabledualmining","enabledualminingduringrentals","disablezerowattminers","enablecheckminingconflict","enableethashzombiemode","enableminerstosavedag","enablelinuxminerniceness","linuxminerniceness","algorithm","excludealgorithm","enablealgorithmvariants","disableunprofitablealgolist","disableunprofitablecpualgolist","enableneverprofitablealgos","excludecoinsymbol","excludecoin")) > $null}
+                "C" {$GlobalSetupName = "Common";$GlobalSetupSteps.AddRange(@("workername","miningmode","devicename","excludedevicename","devicenameend","cpuminingthreads","cpuminingaffinity","enableautoadjustaffinity","gpuminingaffinity","pooldatawindow","enableerrorratio","maxerrorratio","poolstataverage","poolstataveragestable","hashrateweight","hashrateweightstrength","poolaccuracyweight","enablepoolalternates","maxpoolalternates","minerfaulttolerancegpu","minerfaulttolerancecpu","defaultpoolregion","region","currency","enableminerstatus","minerstatusurl","minerstatuskey","showremotemachines","minerstatusemail","pushoveruserkey","minerstatusmaxtemp","minerstatusmaxcrashesperhour","diskmingb","minfreememorygb","gpureservedvramgb","uistyle","uisorting","uiprofitcolumns","uifullbenchmarklist","fastestmineronly","showpoolbalances","showpoolbalancesdetails","showpoolbalancesexcludedpools","excludecoinsymbolbalances","showwalletbalances","walletbalances","enableminingheatcontrol","miningheatcontrol","enablealgorithmmapping","showminerwindow","ignorefees","enableocprofiles","enableocvoltage","enableoclinuxsetallpstates","enableoclinuxforcepstate","ocresetinterval","enableocfullreset","enablelinuxheadless","linuxdisplay","linuxxauthority","linuxminerterminal","enableminersasroot","enableresetvega","msia","msiapath","nvsmipath","ethpillenable","ethpillenablemtp","enableautominerports","staticcpuminerport","staticgpuminerport","enableautoupdate","enableautoalgorithmadd","enableautobenchmark","autobenchmarkmode","profitspikeprotection")) > $null}
+                "E" {$GlobalSetupName = "Energycost";$GlobalSetupSteps.AddRange(@("powerpricecurrency","powerprice","poweroffset","poweroffsetpercent","powercputdp","octopustariffcode","powerpriceapi","powerpriceapivalue","powerpriceapiinterval","fixedcostperday","usepowerprice","checkprofitability","profitabilitylevel")) > $null}
+                "S" {$GlobalSetupName = "Selection";$GlobalSetupSteps.AddRange(@("poolname","minername","excludeminername","excludeminerswithfee","preferminername","preferminermargin","disabledualmining","enabledualminingduringrentals","disablezerowattminers","enablecheckminingconflict","enableethashzombiemode","enableminerstosavedag","enablerandomx1gbpages","enablelinuxminerniceness","linuxminerniceness","algorithm","excludealgorithm","enablealgorithmvariants","disableunprofitablealgolist","disableunprofitablecpualgolist","enableneverprofitablealgos","excludecoinsymbol","excludecoin")) > $null}
                 "N" {$GlobalSetupName = "Network";$GlobalSetupSteps.AddRange(@("runmode","apiport","apiinit","apiauth","apiuser","apipassword","apithreads","apilockconfig","apimaxloginattemps","apiblockloginattemptstime","apiallowips","serverinit","serverinit2","servername","serverport","serveruser","serverpassword","clientconnect","enableserverpools","enableserverconfig","groupname","serverconfigname","excludeserverconfigvars1","excludeserverconfigvars2","clientinit")) > $null}
-                "A" {$GlobalSetupName = "All";$GlobalSetupSteps.AddRange(@("startsetup","workername","runmode","apiport","apiinit","apiauth","apiuser","apipassword","apithreads","apilockconfig","apimaxloginattemps","apiblockloginattemptstime","apiallowips","serverinit","serverinit2","servername","serverport","serveruser","serverpassword","clientconnect","enableserverpools","enableserverconfig","groupname","serverconfigname","excludeserverconfigvars1","excludeserverconfigvars2","clientinit","wallet","nicehash","nicehash2","nicehashorganizationid","nicehashapikey","nicehashapisecret","addcoins1","addcoins2","addcoins3","mrr","mrrapikey","mrrapisecret","region","currency","benchmarkintervalsetup","enablefastlanebenchmark","fastlanebenchmarktypecpu","fastlanebenchmarktypegpu","enablefastlanebenchmarkmissing","enableminerstatus","minerstatusurl","minerstatuskey","showremotemachines","minerstatusemail","pushoveruserkey","minerstatusmaxtemp","minerstatusmaxcrashesperhour","diskmingb","enableautominerports","enableautoupdate","enableautoalgorithmadd","enableautobenchmark","autobenchmarkmode","profitspikeprotection","poolname","autoaddcoins","minername","excludeminername","preferminername","preferminermargin","algorithm","excludealgorithm","enablealgorithmvariants","disableunprofitablealgolist","disableunprofitablecpualgolist","enableneverprofitablealgos","excludecoinsymbol","excludecoin","disabledualmining","enabledualminingduringrentals","disablezerowattminers","excludeminerswithfee","enablecheckminingconflict","enableethashzombiemode","enableminerstosavedag","enablelinuxminerniceness","linuxminerniceness","devicenamebegin","miningmode","devicename","excludedevicename","devicenamewizard","devicenamewizardgpu","devicenamewizardamd1","devicenamewizardamd2","devicenamewizardnvidia1","devicenamewizardnvidia2","devicenamewizardintel1","devicenamewizardintel2","devicenamewizardcpu1","devicenamewizardend","devicenameend","cpuminingthreads","enableautoadjustaffinity","cpuminingaffinity","gpuminingaffinity","staticcpuminerport","staticgpuminerport","pooldatawindow","enableerrorratio","maxerrorratio","poolstataverage","poolstataverage","hashrateweight","hashrateweightstrength","poolaccuracyweight","minerfaulttolerancegpu","minerfaulttolerancecpu","defaultpoolregion","uistyle","uisorting","uiprofitcolumns","uifullbenchmarklist","fastestmineronly","showpoolbalances","showpoolbalancesdetails","showpoolbalancesexcludedpools","excludecoinsymbolbalances","showwalletbalances","walletbalances","enableminingheatcontrol","miningheatcontrol","maxactivitydays","enablealgorithmmapping","showminerwindow","ignorefees","watchdog","excludefromwatchdog","enableocprofiles","enableocvoltage","enableoclinuxsetallpstates","enableoclinuxforcepstate","ocresetinterval","enableocfullreset","enablelinuxheadless","linuxdisplay","linuxxauthority","linuxminerterminal","enableminersasroot","enableresetvega","msia","msiapath","nvsmipath","ethpillenable","ethpillenablemtp","proxy","proxyusername","proxypassword","covalentapikey","enablecurl","delay","interval","benchmarkinterval","maxcrashesduringbenchmark","minimumminingintervals","disableextendinterval","switchingprevention","poolswitchinghysteresis","minerswitchinghysteresis","maxrejectedshareratio","maxallowedluck","maxtimesincelastblock","mincombooversingleratio","enablefastswitching","forcestableprice","disablemsiamonitor","disableapi","disableasyncloader","disableinternetcheck","usetimesync","websitesforonlinecheck","miningprioritycpu","miningprioritygpu","autoexecpriority","powerpricecurrency","powerprice","poweroffset","poweroffsetpercent","powercputdp","octopustariffcode","fixedcostperday","usepowerprice","checkprofitability","profitabilitylevel","quickstart","startpaused","enableupdateduringpause","enableupdatewhenscheduled","enablepauseonactivity","resumeoninactivityseconds","enablepauseonbattery","loglevel","maxlogfiledays","maxdownloadfiledays","maxcachefiledays","enableminerbackups","enablekeepdownloads","enablerestartcomputer","restartcomputerhours","restartrbmtimespan","restartrbmmemory","openclplatformsorting","enabledebugmode","enableverboseasyncloader","ssl","donate")) > $null}
+                "A" {$GlobalSetupName = "All";$GlobalSetupSteps.AddRange(@("startsetup","workername","runmode","apiport","apiinit","apiauth","apiuser","apipassword","apithreads","apilockconfig","apimaxloginattemps","apiblockloginattemptstime","apiallowips","serverinit","serverinit2","servername","serverport","serveruser","serverpassword","clientconnect","enableserverpools","enableserverconfig","groupname","serverconfigname","excludeserverconfigvars1","excludeserverconfigvars2","clientinit","wallet","nicehash","nicehash2","nicehashorganizationid","nicehashapikey","nicehashapisecret","addcoins1","addcoins2","addcoins3","mrr","mrrapikey","mrrapisecret","region","currency","benchmarkintervalsetup","enablefastlanebenchmark","fastlanebenchmarktypecpu","fastlanebenchmarktypegpu","enablefastlanebenchmarkmissing","enableminerstatus","minerstatusurl","minerstatuskey","showremotemachines","minerstatusemail","pushoveruserkey","minerstatusmaxtemp","minerstatusmaxcrashesperhour","diskmingb","minfreememorygb","gpureservedvramgb","enableautominerports","enableautoupdate","enableautoalgorithmadd","enableautobenchmark","autobenchmarkmode","profitspikeprotection","poolname","autoaddcoins","minername","excludeminername","preferminername","preferminermargin","algorithm","excludealgorithm","enablealgorithmvariants","disableunprofitablealgolist","disableunprofitablecpualgolist","enableneverprofitablealgos","excludecoinsymbol","excludecoin","disabledualmining","enabledualminingduringrentals","disablezerowattminers","excludeminerswithfee","enablecheckminingconflict","enableethashzombiemode","enableminerstosavedag","enablerandomx1gbpages","enablelinuxminerniceness","linuxminerniceness","devicenamebegin","miningmode","devicename","excludedevicename","devicenamewizard","devicenamewizardgpu","devicenamewizardamd1","devicenamewizardamd2","devicenamewizardnvidia1","devicenamewizardnvidia2","devicenamewizardintel1","devicenamewizardintel2","devicenamewizardcpu1","devicenamewizardend","devicenameend","cpuminingthreads","enableautoadjustaffinity","cpuminingaffinity","gpuminingaffinity","staticcpuminerport","staticgpuminerport","pooldatawindow","enableerrorratio","maxerrorratio","poolstataverage","poolstataverage","hashrateweight","hashrateweightstrength","poolaccuracyweight","enablepoolalternates","maxpoolalternates","minerfaulttolerancegpu","minerfaulttolerancecpu","defaultpoolregion","uistyle","uisorting","uiprofitcolumns","uifullbenchmarklist","fastestmineronly","showpoolbalances","showpoolbalancesdetails","showpoolbalancesexcludedpools","excludecoinsymbolbalances","showwalletbalances","walletbalances","enableminingheatcontrol","miningheatcontrol","maxactivitydays","enablealgorithmmapping","showminerwindow","ignorefees","watchdog","excludefromwatchdog","enableocprofiles","enableocvoltage","enableoclinuxsetallpstates","enableoclinuxforcepstate","ocresetinterval","enableocfullreset","enablelinuxheadless","linuxdisplay","linuxxauthority","linuxminerterminal","enableminersasroot","enableresetvega","msia","msiapath","nvsmipath","ethpillenable","ethpillenablemtp","proxy","proxyusername","proxypassword","covalentapikey","enablecurl","useragent","delay","interval","benchmarkinterval","maxcrashesduringbenchmark","enableautodisableminers","maxcrashesbeforedisable","crashtrackingwindowminutes","autodisableresethours","minimumminingintervals","disableextendinterval","excludecurrencyratefromcoinbase","switchingprevention","poolswitchinghysteresis","minerswitchinghysteresis","maxrejectedshareratio","maxallowedluck","maxtimesincelastblock","mincombooversingleratio","enablefastswitching","forcestableprice","disablemsiamonitor","disableapi","disableasyncloader","disableinternetcheck","usetimesync","websitesforonlinecheck","miningprioritycpu","miningprioritygpu","autoexecpriority","powerpricecurrency","powerprice","poweroffset","poweroffsetpercent","powercputdp","octopustariffcode","powerpriceapi","powerpriceapivalue","powerpriceapiinterval","fixedcostperday","usepowerprice","checkprofitability","profitabilitylevel","quickstart","startpaused","enableupdateduringpause","enableupdatewhenscheduled","enablepauseonactivity","resumeoninactivityseconds","enablepauseonbattery","loglevel","maxlogfiledays","maxdownloadfiledays","maxcachefiledays","enableminerbackups","enablekeepdownloads","enablerestartcomputer","restartcomputerhours","restartrbmtimespan","restartrbmmemory","openclplatformsorting","enabledebugmode","enabledebugtimers","enableverboseasyncloader","ssl","donate")) > $null}
             }
             [void]$GlobalSetupSteps.Add("save")
 
@@ -382,7 +384,7 @@ function Start-Setup {
 
                         "addcoins3" {
                             if ($addcoins -and $addcoin) {
-                                $CoinsActual.$addcoin.Wallet = Read-HostString -Prompt "Enter your $($addcoin) wallet address " -Default $CoinsActual.$addcoin.Wallet -Characters "A-Z0-9-\._~:/\?#\[\]@!\$&'\(\)\*\+,;=" | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
+                                $CoinsActual.$addcoin.Wallet = Read-HostString -Prompt "Enter your ${addcoin} wallet address " -Default $CoinsActual.$addcoin.Wallet -Characters "A-Z0-9-\._~:/\?#\[\]@!\$&'\(\)\*\+,;=" | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
                                 $CoinsActual.$addcoin.Wallet = $CoinsActual.$addcoin.Wallet.Trim()
                                 $CoinsActual.$addcoin | Add-Member EnableAutoPool "1" -Force
                                 $CoinsActualSave = [PSCustomObject]@{}
@@ -594,6 +596,12 @@ function Start-Setup {
                                 $GlobalSetupStepStore = $false
                             }
                         }
+                        "minfreememorygb" {
+                            $Config.MinFreeMemoryGB = Read-HostDouble -Prompt "Enter RAM in GB to keep free for the system (algorithms needing more than the rest will be skipped, 0=disable)" -Default $Config.MinFreeMemoryGB -Min 0 -Max 64 | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
+                        }
+                        "gpureservedvramgb" {
+                            $Config.GPUReservedVRAMGB = Read-HostString -Prompt "Enter VRAM in GB to reserve per GPU (leave empty for auto-detection via nvidia-smi, 0=no reservation)" -Default $Config.GPUReservedVRAMGB -Characters "0-9\." | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
+                        }
                         "apiport" {
                             if ($IsInitialSetup) {
                                 Write-Host " "
@@ -730,7 +738,7 @@ function Start-Setup {
                             }
                         }
                         "serverpassword" {
-                            if ($Config.RunMode -eq "client") {
+                            if ($Config.RunMode -eq "client" -and $Config.ServerUser -ne "") {
                                 $Config.ServerPassword = Read-HostString -Prompt "If you have auth enabled on your server's API, enter the password ($(if ($Config.ServerPassword) {"enter 'clear'"} else {"leave empty"}) for no auth)" -Default $Config.ServerPassword -Characters "" | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
                             } else {
                                 $GlobalSetupStepStore = $false
@@ -794,7 +802,7 @@ function Start-Setup {
                         }
                         "groupname" {
                             if ($Config.RunMode -eq "client" -and (Get-Yes $Config.EnableServerConfig)) {
-                                $Config.GroupName = Read-HostString -Prompt "Enter a group name, if clients should be grouped together for shared config (($(if ($Config.ServerUser) {"enter 'clear'"} else {"leave empty"}) for no group)" -Default $Config.GroupName -Characters "A-Z0-9" | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
+                                $Config.GroupName = Read-HostString -Prompt "Enter a group name, if clients should be grouped together for shared config (($(if ($Config.GroupName) {"enter 'clear'"} else {"leave empty"}) for no group)" -Default $Config.GroupName -Characters "A-Z0-9" | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
                                 if ($IsInitialSetup -and $Config.GroupName) {
                                     Write-Host " "
                                     Write-Host "HINT:" -Foreground Cyan
@@ -807,7 +815,7 @@ function Start-Setup {
                         }
                         "serverconfigname" {
                             if ($Config.RunMode -eq "client" -and (Get-Yes $Config.EnableServerConfig)) {
-                                $Config.ServerConfigName = Read-HostArray -Prompt "Enter the config files to be copied to this machine" -Default $Config.ServerConfigName -Characters "A-Z" -Valid @("algorithms","coins","config","miners","mrr","mrralgorithms","ocprofiles","pools","scheduler","userpools") | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
+                                $Config.ServerConfigName = Read-HostArray -Prompt "Enter the config files to be copied to this machine" -Default $Config.ServerConfigName -Characters "A-Z" -Valid @("algorithms","coins","config","customminers","miners","mrr","mrralgorithms","ocprofiles","pools","scheduler","userpools") | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
                             } else {
                                 $GlobalSetupStepStore = $false
                             }
@@ -844,10 +852,18 @@ function Start-Setup {
                                         Write-Host "Configfiles downloaded successfully!" -ForegroundColor Green
                                         Write-Host " "
                                         Get-ConfigArray $Config.ServerConfigName | Foreach-Object {
-                                            if ($Var = $ConfigFiles.Keys -match $_) {
-                                                Set-Variable "$($Var)Actual" -Value $(Get-Content $ConfigFiles[$Var].Path -Raw | ConvertFrom-Json)
+                                            if ($Var = $ConfigFiles.Keys -eq $_) {
+                                                Set-Variable "${Var}Actual" -Value $(Get-Content $ConfigFiles[$Var].Path -Raw | ConvertFrom-Json)
                                                 if ($Var -eq "Config") {
-                                                    $ConfigActual.PSObject.Properties | Foreach-Object {$Config | Add-Member $_.Name $_.Value -Force}
+                                                    $NextConfig = Get-ChildItemContent $ConfigFiles[$Var].Path -Force -Parameters $Parameters
+                                                    $NextConfig.PSObject.Properties | Foreach-Object {
+                                                        if ([bool]$Config.PSObject.Properties[$_.Name]) {
+                                                            $Config."$($_.Name)" = $_.Value
+                                                        } else  {
+                                                            $Config | Add-Member $_.Name $_.Value -Force
+                                                        }
+                                                    }
+                                                    $NextConfig = $null
                                                 } elseif ($Var -eq "Pools") {
                                                     if ($PoolsActual | Get-Member Nicehash -MemberType NoteProperty) {
                                                         $NicehashWallet = $PoolsActual.Nicehash.BTC
@@ -861,6 +877,8 @@ function Start-Setup {
                                                         $MRRAPIKey      = $PoolsActual.MiningRigRentals.API_Key
                                                         $MRRAPISecret   = $PoolsActual.MiningRigRentals.API_Secret
                                                     }
+                                                } elseif ($Var -eq "Userpools") {
+                                                    $AvailPools = $Session.AvailPools + @($UserpoolsActual | Where-Object {$_.Name} | Foreach-Object {$_.Name} | Select-Object -Unique) | Sort-Object
                                                 }
                                             }
                                         }
@@ -874,7 +892,7 @@ function Start-Setup {
 
                                 if ($GlobalSetupStepStore) {
                                     if (Test-TcpServer -Server $Config.ServerName -Port $Config.ServerPort -Timeout 2) {
-                                        if (Read-HostBool "Download server configuration now? This will end the setup." -Default $true | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}) {
+                                        if (Read-HostBool "Download server configuration now? This will restart the setup with the new values loaded." -Default $true | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}) {
                                             $DownloadServerNow = $true
                                             throw "Goto save"
                                         }
@@ -909,6 +927,9 @@ function Start-Setup {
                                 Write-Host "BTC is mandatory - adding it automatically" -ForegroundColor Yellow
                                 $Config.Currency += "BTC"
                             }
+                        }
+                        "ExcludeCurrencyRateFromCoinbase" {
+                            $Config.ExcludeCurrencyRateFromCoinbase = Read-HostArray -Prompt "Coinbase is the main currency provider, only if a symbol is not delivered from this API it will get called from api.rbminer.net. Sometimes there are false values due to ident symbols. Please leave as-is, since the RainbowMiner will update the defaults asap in case of false rates." -Default $Config.ExcludeCurrencyRateFromCoinbase | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
                         }
                         "benchmarkintervalsetup" {
                             if ($IsInitialSetup) {
@@ -1060,6 +1081,10 @@ function Start-Setup {
                         }
                         "enableminerstosavedag" {
                             $Config.EnableMinersToSaveDAG = Read-HostBool -Prompt "Allow miners (currently TTminer only) to save DAGs to disk, speeds up minerstart, but costs a lot of diskspace" -Default $Config.EnableMinersToSaveDAG | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
+                        }
+                        "enablerandomx1gbpages" {
+                            $Config.EnableRandomX1GBPages = Read-HostBool -Prompt "Allow miners to enable 1GB Pages for RandomX like algorithms (currently SrbMinerMulti only)" -Default $Config.EnableRandomX1GBPages | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
+
                         }
                         "devicenamebegin" {
                             $GlobalSetupStepStore = $false
@@ -1340,6 +1365,14 @@ function Start-Setup {
                         }
                         "poolaccuracyweight" {
                             $Config.PoolAccuracyWeight = Read-HostInt -Prompt "Adjust weight of pools accuracy on the profit comparison in % (0..100, 0=disable)" -Default $Config.PoolAccuracyWeight -Min 0 -Max 100 | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
+                        }
+                        "enablepoolalternates" {
+                            $Config.EnablePoolAlternates = Read-HostBool -Prompt "Offer a miner the best pool it can use, if it cannot use the most profitable one?" -Default $Config.EnablePoolAlternates | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
+                        }
+                        "maxpoolalternates" {
+                            if (Get-Yes $Config.EnablePoolAlternates) {
+                                $Config.MaxPoolAlternates = Read-HostInt -Prompt "Maximum number of alternate pools per algorithm (0=disable)" -Default $Config.MaxPoolAlternates -Min 0 -Max 10 | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
+                            }
                         }
                         "minerfaulttolerancegpu" {
                             $Config.MinerFaultToleranceGPU = Read-HostInt -Prompt "Set the GPU miner fault tolerance in % (10..100)" -Default $Config.MinerFaultToleranceGPU -Min 10 -Max 100 | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
@@ -1642,6 +1675,30 @@ function Start-Setup {
                         "maxcrashesduringbenchmark" {
                             $Config.MaxCrashesDuringBenchmark = Read-HostInt -Prompt "Maximum number of allowed crashes, until benchmark fails" -Default $Config.MaxCrashesDuringBenchmark -Mandatory -Min 1 | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
                         }
+                        "enableautodisableminers" {
+                            $Config.EnableAutoDisableMiners = Read-HostBool -Prompt "Automatically disable a miner/algorithm after repeated crashes?" -Default $Config.EnableAutoDisableMiners | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
+                        }
+                        "maxcrashesbeforedisable" {
+                            if (Get-Yes $Config.EnableAutoDisableMiners) {
+                                $Config.MaxCrashesBeforeDisable = Read-HostInt -Prompt "Number of crashes within the tracking window, until a miner/algorithm gets disabled" -Default $Config.MaxCrashesBeforeDisable -Mandatory -Min 1 | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
+                            } else {
+                                $GlobalSetupStepStore = $false
+                            }
+                        }
+                        "crashtrackingwindowminutes" {
+                            if (Get-Yes $Config.EnableAutoDisableMiners) {
+                                $Config.CrashTrackingWindowMinutes = Read-HostInt -Prompt "Sliding window in minutes for counting miner crashes" -Default $Config.CrashTrackingWindowMinutes -Mandatory -Min 1 | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
+                            } else {
+                                $GlobalSetupStepStore = $false
+                            }
+                        }
+                        "autodisableresethours" {
+                            if (Get-Yes $Config.EnableAutoDisableMiners) {
+                                $Config.AutoDisableResetHours = Read-HostInt -Prompt "Re-enable an auto-disabled miner/algorithm after this many hours (0=never re-enable)" -Default $Config.AutoDisableResetHours -Min 0 | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
+                            } else {
+                                $GlobalSetupStepStore = $false
+                            }
+                        }
                         "minimumminingintervals" {
                             $Config.MinimumMiningIntervals = Read-HostInt -Prompt "Minimum mining intervals, before the regular loop starts" -Default $Config.MinimumMiningIntervals -Mandatory -Min 1 | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
                         }
@@ -1760,7 +1817,7 @@ function Start-Setup {
                                         $ProductCode = $Matches[1]
                                         $fromto = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssK")
                                         try {
-                                            $OctopusRequest = Invoke-GetUrl "https://api.octopus.energy/v1/products/$($ProductCode)/electricity-tariffs/$($Config.OctopusTariffCode)/standard-unit-rates/?period_from=$($fromto)" -timeout 10
+                                            $OctopusRequest = Invoke-GetUrl "https://api.octopus.energy/v1/products/${ProductCode}/electricity-tariffs/$($Config.OctopusTariffCode)/standard-unit-rates/?period_from=${fromto}" -timeout 10
                                             $OctopusRequest.results | Where-Object {(-not $_.valid_from -or $_.valid_from -le $fromto) -and (-not $_.valid_to -or $_.valid_to -gt $fromto)} | Foreach-Object {
                                                 Write-Host "The tariff code is valid: your current rate is $($_.value_inc_vat) p/kWh" -ForegroundColor Green
                                                 $octopus_ok = $true
@@ -1775,6 +1832,26 @@ function Start-Setup {
                                     $octopus_ok = $true
                                 }
                             } until ($octopus_ok)
+                        }
+                        "powerpriceapi" {
+                            Write-Host " "
+                            Write-Host "Connect RainbowMiner to a power price API like NodeRed"
+                            Write-Host ""
+                            $Config.PowerPriceApi = Read-HostString -Prompt "Enter an url to your power price API endpoint ($(if ($Config.PowerPriceApi) {"enter 'clear'"} else {"leave empty"}) to disable)" -Default $Config.PowerPriceApi -Characters "A-Z0-9-\._~:/\?#\[\]@!\$&'\(\)\*\+,;=\{\}" | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
+                        }
+                        "powerpriceapivalue" {
+                            if ($Config.PowerPriceApi) {
+                                $Config.PowerPriceApiValue = Read-HostString -Prompt "Enter path to value in json ($(if ($Config.PowerPriceApiValue) {"enter 'clear' or #"} else {"leave empty or enter #"}) if the API returns a plain number)" -Default $Config.PowerPriceApiValue -Characters "A-Z0-9-\._#\[\]" | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
+                            } else {
+                                $GlobalSetupStepStore = $false
+                            }
+                        }
+                        "powerpriceapiinterval" {
+                            if ($Config.PowerPriceApi) {
+                                $Config.PowerPriceApiInterval = Read-HostInt -Prompt "Enter the interval to call the PowerPriceApi in seconds (0=use default interval)" -Default $Config.PowerPriceApiInterval -Min 0 | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
+                            } else {
+                                $GlobalSetupStepStore = $false
+                            }
                         }
                         "fixedcostperday" {
                             $Config.FixedCostPerDay = Read-HostDouble -Prompt "Optional: enter cumulative fixed costs per day (in power price currency, will be added during mining) " -Default $Config.FixedCostPerDay | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
@@ -1843,11 +1920,17 @@ function Start-Setup {
                         "enabledebugmode" {
                             $Config.EnableDebugMode = Read-HostBool -Prompt "Enable debug mode (only do that, when told)" -Default $Config.EnableDebugMode | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
                         }
+                        "enabledebugtimers" {
+                            $Config.EnableDebugTimers = Read-HostBool -Prompt "Enable per-round timing files in Logs (timerpools/timerminers/timerselect.json), without full debug mode" -Default $Config.EnableDebugTimers | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
+                        }
                         "enableverboseasyncloader" {
                             $Config.EnableVerboseAsyncloader = Read-HostBool -Prompt "Enable verbose logs for Asyncloader (only do that, when told)" -Default $Config.EnableVerboseAsyncloader | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
                         }
                         "covalentapikey" {
                             $Config.CovalentAPIKey = Read-HostString -Prompt "Enter Covalent API key, if needed ($(if ($Config.CovalentAPIKey) {"enter 'clear'"} else {"leave empty"}) to disable)" -Default $Config.CovalentAPIKey -Characters "" | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
+                        }
+                        "useragent" {
+                            $Config.UserAgent = Read-HostString -Prompt "Enter a custom user agent for all web requests, if your provider or Cloudflare blocks the default ($(if ($Config.UserAgent) {"enter 'clear'"} else {"leave empty"}) to use the built-in one)" -Default $Config.UserAgent -Characters "" | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
                         }
                         "donate" {
                             $Config.Donate = [int]($(Read-HostDouble -Prompt "Enter the developer donation fee in %" -Default ([Math]::Round($Config.Donate/0.1440)/100) -Mandatory -Min 0.69 -Max 100)*14.40) | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
@@ -1869,8 +1952,10 @@ function Start-Setup {
                             $ConfigActual | Add-Member ProxyPassword $Config.ProxyPassword -Force
                             $ConfigActual | Add-Member CovalentAPIKey $($Config.CovalentAPIKey) -Force
                             $ConfigActual | Add-Member EnableCurl $(if (Get-Yes $Config.EnableCurl){"1"}else{"0"}) -Force
+                            $ConfigActual | Add-Member UserAgent $($Config.UserAgent) -Force
                             $ConfigActual | Add-Member Region $Config.Region -Force
                             $ConfigActual | Add-Member Currency $($Config.Currency -join ",") -Force
+                            $ConfigActual | Add-Member ExcludeCurrencyRateFromCoinbase $($Config.ExcludeCurrencyRateFromCoinbase -join ",") -Force
                             $ConfigActual | Add-Member PoolName $($Config.PoolName -join ",") -Force
                             $ConfigActual | Add-Member ExcludePoolName $($Config.ExcludePoolName -join ",") -Force
                             $ConfigActual | Add-Member MinerName $($Config.MinerName -join ",") -Force
@@ -1906,6 +1991,10 @@ function Start-Setup {
                             $ConfigActual | Add-Member Interval $Config.Interval -Force
                             $ConfigActual | Add-Member BenchmarkInterval $Config.BenchmarkInterval -Force
                             $ConfigActual | Add-Member MaxCrashesDuringBenchmark $Config.MaxCrashesDuringBenchmark -Force
+                            $ConfigActual | Add-Member EnableAutoDisableMiners $(if (Get-Yes $Config.EnableAutoDisableMiners){"1"}else{"0"}) -Force
+                            $ConfigActual | Add-Member MaxCrashesBeforeDisable $Config.MaxCrashesBeforeDisable -Force
+                            $ConfigActual | Add-Member CrashTrackingWindowMinutes $Config.CrashTrackingWindowMinutes -Force
+                            $ConfigActual | Add-Member AutoDisableResetHours $Config.AutoDisableResetHours -Force
                             $ConfigActual | Add-Member OCResetInterval $Config.OCResetInterval -Force
                             $ConfigActual | Add-Member EnableFastlaneBenchmark $(if (Get-Yes $Config.EnableFastlaneBenchmark){"1"}else{"0"}) -Force
                             $ConfigActual | Add-Member EnableFastlaneBenchmarkMissing $(if (Get-Yes $Config.EnableFastlaneBenchmarkMissing){"1"}else{"0"}) -Force
@@ -1944,6 +2033,9 @@ function Start-Setup {
                             $ConfigActual | Add-Member PowerPrice $Config.PowerPrice -Force
                             $ConfigActual | Add-Member PowerOffsetPercent $Config.PowerOffsetPercent -Force
                             $ConfigActual | Add-Member OctopusTariffCode $Config.OctopusTariffCode -Force
+                            $ConfigActual | Add-Member PowerPriceApi $Config.PowerPriceApi -Force
+                            $ConfigActual | Add-Member PowerPriceApiValue $Config.PowerPriceApiValue -Force
+                            $ConfigActual | Add-Member PowerPriceApiInterval $Config.PowerPriceApiInterval -Force
                             $ConfigActual | Add-Member PowerOffset $Config.PowerOffset -Force
                             $ConfigActual | Add-Member PowerCPUtdp $Config.PowerCPUtdp -Force
                             $ConfigActual | Add-Member PowerPriceCurrency $Config.PowerPriceCurrency -Force
@@ -1999,9 +2091,12 @@ function Start-Setup {
                             $ConfigActual | Add-Member HashrateWeight $Config.HashrateWeight -Force
                             $ConfigActual | Add-Member HashrateWeightStrength $Config.HashrateWeightStrength -Force
                             $ConfigActual | Add-Member PoolAccuracyWeight $Config.PoolAccuracyWeight -Force
+                            $ConfigActual | Add-Member EnablePoolAlternates $(if (Get-Yes $Config.EnablePoolAlternates){"1"}else{"0"}) -Force
+                            $ConfigActual | Add-Member MaxPoolAlternates $Config.MaxPoolAlternates -Force
                             $ConfigActual | Add-Member MinerFaultToleranceGPU $Config.MinerFaultToleranceGPU -Force
                             $ConfigActual | Add-Member MinerFaultToleranceCPU $Config.MinerFaultToleranceCPU -Force
                             $ConfigActual | Add-Member ProfitSpikeProtection $Config.ProfitSpikeProtection -Force
+                            $ConfigActual | Add-Member EnableRandomX1GBPages $(if (Get-Yes $Config.EnableRandomX1GBPages){"1"}else{"0"}) -Force
                             $ConfigActual | Add-Member DefaultPoolRegion $($Config.DefaultPoolRegion -join ",") -Force
                             $ConfigActual | Add-Member EnableMinerStatus $(if (Get-Yes $Config.EnableMinerStatus){"1"}else{"0"}) -Force
                             $ConfigActual | Add-Member MinerStatusUrl $Config.MinerStatusUrl -Force
@@ -2012,6 +2107,8 @@ function Start-Setup {
                             $ConfigActual | Add-Member MinerStatusMaxTemp $Config.MinerStatusMaxTemp -Force
                             $ConfigActual | Add-Member MinerStatusMaxCrashesPerHour $Config.MinerStatusMaxCrashesPerHour -Force
                             $ConfigActual | Add-Member DiskMinGB $Config.DiskMinGB -Force
+                            $ConfigActual | Add-Member MinFreeMemoryGB $Config.MinFreeMemoryGB -Force
+                            $ConfigActual | Add-Member GPUReservedVRAMGB $Config.GPUReservedVRAMGB -Force
                             $ConfigActual | Add-Member NVSMIpath $Config.NVSMIpath -Force
                             $ConfigActual | Add-Member Quickstart $(if (Get-Yes $Config.Quickstart){"1"}else{"0"}) -Force
                             $ConfigActual | Add-Member StartPaused $(if (Get-Yes $Config.StartPaused){"1"}else{"0"}) -Force
@@ -2037,6 +2134,7 @@ function Start-Setup {
                             $ConfigActual | Add-Member EnableKeepDownloads $(if (Get-Yes $Config.EnableKeepDownloads){"1"}else{"0"}) -Force
                             $ConfigActual | Add-Member EnableRestartComputer $(if (Get-Yes $Config.EnableRestartComputer){"1"}else{"0"}) -Force
                             $ConfigActual | Add-Member EnableDebugMode $(if (Get-Yes $Config.EnableDebugMode){"1"}else{"0"}) -Force
+                            $ConfigActual | Add-Member EnableDebugTimers $(if (Get-Yes $Config.EnableDebugTimers){"1"}else{"0"}) -Force
                             $ConfigActual | Add-Member EnableVerboseAsyncloader $(if (Get-Yes $Config.EnableVerboseAsyncloader){"1"}else{"0"}) -Force
                             $ConfigActual | Add-Member RestartComputerHours $Config.RestartComputerHours -Force
                             $ConfigActual | Add-Member RestartRBMTimespan $Config.RestartRBMTimespan -Force
@@ -2096,8 +2194,8 @@ function Start-Setup {
                                         if (-not $PoolsActual."$($_.Pool)".$Currency) {
                                             $PoolsActual."$($_.Pool)" | Add-Member $Currency "`$$Currency" -Force
                                         }
-                                        if (-not $PoolsActual."$($_.Pool)"."$($Currency)-Params") {
-                                            $PoolsActual."$($_.Pool)" | Add-Member "$($Currency)-Params" "" -Force
+                                        if (-not $PoolsActual."$($_.Pool)"."${Currency}-Params") {
+                                            $PoolsActual."$($_.Pool)" | Add-Member "${Currency}-Params" "" -Force
                                         }
                                     }
                                 }
@@ -2144,7 +2242,7 @@ function Start-Setup {
                                         }
                         $GlobalSetupStep = $GlobalSetupSteps.IndexOf($NextSetupStep)
                         if ($GlobalSetupStep -lt 0) {
-                            Write-Log -Level Error "Unknown goto command `"$($NextSetupStep)`". You should never reach here. Please open an issue on github.com"
+                            Write-Log -Level Error "Unknown goto command `"$NextSetupStep`". You should never reach here. Please open an issue on github.com"
                             $GlobalSetupStep = $GlobalSetupStepBack[$GlobalSetupStepBack.Count-1];$GlobalSetupStepBack.RemoveAt($GlobalSetupStepBack.Count-1)
                         }
                     }
@@ -2208,7 +2306,7 @@ function Start-Setup {
                                 $EditSecondaryAlgorithm = Get-Algorithm $EditSecondaryAlgorithm
                             }
                             "configure" {
-                                $EditMinerName = "$($Miner_Name)$(if ($EditDeviceName -ne '*'){"-$EditDeviceName"})"                
+                                $EditMinerName = "${Miner_Name}$(if ($EditDeviceName -ne '*'){"-$EditDeviceName"})"                
                                 Write-Host " "
                                 Write-Host "Configuration for $EditMinerName, $(if ($EditAlgorithm -eq '*'){"all algorithms"}else{$EditAlgorithm})$(if($EditSecondaryAlgorithm -ne ''){"+"+$EditSecondaryAlgorithm})" -BackgroundColor Yellow -ForegroundColor Black
                                 Write-Host " "
@@ -2309,10 +2407,11 @@ function Start-Setup {
                                     $Valid_Values = switch ($Miner_Name) {
                                         "Gminer" {"1,2,3, ... 100"}
                                         "NBminer" {"1,2,3, ... 10"}
+                                        "OneZeroMiner" {"1_10,2_8, ..."}
                                         "Teamred" {"0.01, 0.02, ... 1.00"}
                                     }
                                     if ($Valid_Values) {
-                                        $EditMinerConfig.Intensity = Read-HostArray -Prompt "Enter intensities to benchmark, as comma list ($($Valid_Values), $(if ($EditMinerConfig.Intensity) {"enter 'clear'"} else {"leave empty"}) for all)" -Default $EditMinerConfig.Intensity -Characters "0-9\." | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
+                                        $EditMinerConfig.Intensity = Read-HostArray -Prompt "Enter intensities to benchmark, as comma list (${Valid_Values}, $(if ($EditMinerConfig.Intensity) {"enter 'clear'"} else {"leave empty"}) for all)" -Default $EditMinerConfig.Intensity -Characters "0-9\._" | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_}
                                         $EditMinerConfig.Intensity = "$($EditMinerConfig.Intensity -join ",")"
                                         $MinerSetupStepStore = $true
                                     }
@@ -2374,7 +2473,7 @@ function Start-Setup {
                                             }
                             $MinerSetupStep = $MinerSetupSteps.IndexOf($NextSetupStep)
                             if ($MinerSetupStep -lt 0) {
-                                Write-Log -Level Error "Unknown goto command `"$($NextSetupStep)`". You should never reach here. Please open an issue on github.com"
+                                Write-Log -Level Error "Unknown goto command `"$NextSetupStep`". You should never reach here. Please open an issue on github.com"
                                 $MinerSetupStep = $MinerSetupStepBack[$MinerSetupStepBack.Count-1];$MinerSetupStepBack.RemoveAt($MinerSetupStepBack.Count-1)
                             }
                         }
@@ -2542,7 +2641,7 @@ function Start-Setup {
                                                 do {
                                                     $CurrencyEntryDone = $true
                                                     $v = $PoolConfig.$PoolEditCurrency
-                                                    $params = $PoolConfig."$($PoolEditCurrency)-Params"
+                                                    $params = $PoolConfig."${PoolEditCurrency}-Params"
                                                     if ($v -eq "`$Wallet" -or (-not $v -and $PoolEditCurrency -eq "BTC") -or $v -eq "`$$PoolEditCurrency") {$v = "default"}
                                                     elseif ($v -eq "`$$PoolEditCurrency") {$v = "default";$t = "coins.config.txt"}
                                                     $v = Read-HostString -Prompt "Enter your wallet address for $PoolEditCurrency (enter `"remove`" to remove this currency, `"default`" to always use current default wallet from your $(if ($PoolEditCurrency -ne "BTC") {"coins."})config.txt)" -Default $v -Characters "A-Z0-9-\._~:/\?#\[\]@!\$&'\(\)\*\+,;=" | Foreach-Object {if (@("cancel","exit") -icontains $_) {throw $_};$_}
@@ -2550,13 +2649,13 @@ function Start-Setup {
                                                     if (@("back","<") -inotcontains $v) {
                                                         if (@("del","delete","remove","clear","rem") -icontains $v) {
                                                             if (@($PoolConfig.PSObject.Properties.Name) -icontains $PoolEditCurrency) {[void]$PoolConfig.PSObject.Properties.Remove($PoolEditCurrency)}
-                                                            if (@($PoolConfig.PSObject.Properties.Name) -icontains "$($PoolEditCurrency)-Params") {[void]$PoolConfig.PSObject.Properties.Remove("$($PoolEditCurrency)-Params")}
+                                                            if (@($PoolConfig.PSObject.Properties.Name) -icontains "${PoolEditCurrency}-Params") {[void]$PoolConfig.PSObject.Properties.Remove("${PoolEditCurrency}-Params")}
                                                         } else {
                                                             if (@("def","default","wallet","standard") -icontains $v) {$v = "`$$(if ($PoolEditCurrency -eq "BTC") {"Wallet"} else {$PoolEditCurrency})"}
                                                             $PoolConfig | Add-Member $PoolEditCurrency $v -Force
                                                             $params = Read-HostString -Prompt "Enter additional password parameters for $PoolEditCurrency" -Default $params -Characters $false | Foreach-Object {if (@("cancel","exit") -icontains $_) {throw $_};$_}
                                                             if (@("back","<") -inotcontains $params) {
-                                                                $PoolConfig | Add-Member "$($PoolEditCurrency)-Params" "$($params)" -Force
+                                                                $PoolConfig | Add-Member "${PoolEditCurrency}-Params" "$params" -Force
                                                             } else {
                                                                 $CurrencyEntryDone = $false
                                                             }
@@ -2780,7 +2879,7 @@ function Start-Setup {
                                                     }
                                     $PoolSetupStep = $PoolSetupSteps.IndexOf($NextSetupStep)
                                     if ($PoolSetupStep -lt 0) {
-                                        Write-Log -Level Error "Unknown goto command `"$($NextSetupStep)`". You should never reach here. Please open an issue on github.com"
+                                        Write-Log -Level Error "Unknown goto command `"$NextSetupStep`". You should never reach here. Please open an issue on github.com"
                                         $PoolSetupStep = $PoolSetupStepBack[$PoolSetupStepBack.Count-1];$PoolSetupStepBack.RemoveAt($PoolSetupStepBack.Count-1)
                                     }
                                 }
@@ -2903,7 +3002,7 @@ function Start-Setup {
                                                     }
                                     $DeviceSetupStep = $DeviceSetupSteps.IndexOf($NextSetupStep)
                                     if ($DeviceSetupStep -lt 0) {
-                                        Write-Log -Level Error "Unknown goto command `"$($NextSetupStep)`". You should never reach here. Please open an issue on github.com"
+                                        Write-Log -Level Error "Unknown goto command `"$NextSetupStep`". You should never reach here. Please open an issue on github.com"
                                         $DeviceSetupStep = $DeviceSetupStepBack[$DeviceSetupStepBack.Count-1];$DeviceSetupStepBack.RemoveAt($DeviceSetupStepBack.Count-1)
                                     }
                                 }
@@ -3031,7 +3130,7 @@ function Start-Setup {
                                                     }
                                     $AlgorithmSetupStep = $AlgorithmSetupSteps.IndexOf($NextSetupStep)
                                     if ($AlgorithmSetupStep -lt 0) {
-                                        Write-Log -Level Error "Unknown goto command `"$($NextSetupStep)`". You should never reach here. Please open an issue on github.com"
+                                        Write-Log -Level Error "Unknown goto command `"$NextSetupStep`". You should never reach here. Please open an issue on github.com"
                                         $AlgorithmSetupStep = $AlgorithmSetupStepBack[$AlgorithmSetupStepBack.Count-1];$AlgorithmSetupStepBack.RemoveAt($AlgorithmSetupStepBack.Count-1)
                                     }
                                 }
@@ -3094,7 +3193,7 @@ function Start-Setup {
                         $Coin_Symbol = $Coin_Symbol.ToUpper()
 
                         if (-not $CoinsActual.$Coin_Symbol) {
-                            if (Read-HostBool "Do you want to add a new coin `"$($Coin_Symbol)`"?" -Default $true) {
+                            if (Read-HostBool "Do you want to add a new coin `"$Coin_Symbol`"?" -Default $true) {
                                 $CoinsActual | Add-Member $Coin_Symbol ($CoinsDefault | ConvertTo-Json -Depth 10 | ConvertFrom-Json) -Force
                                 Set-ContentJson -PathToFile $ConfigFiles["Coins"].Path -Data $CoinsActual > $null
                             } else {
@@ -3200,9 +3299,9 @@ function Start-Setup {
                                                 $PoolsActualSave | Add-Member $Pool ([PSCustomObject]@{}) -Force
                                                 if ($IsInUse) {
                                                     $PoolsActualSave.$Pool | Add-Member $Coin_Symbol_Base "`$$Coin_Symbol" -Force
-                                                    $PoolsActualSave.$Pool | Add-Member "$($Coin_Symbol_Base)-Params" "$($PoolsActual.$Pool."$($Coin_Symbol_Base)-Params")" -Force
+                                                    $PoolsActualSave.$Pool | Add-Member "${Coin_Symbol_Base}-Params" "$($PoolsActual.$Pool."${Coin_Symbol_Base}-Params")" -Force
                                                 }
-                                                $PoolsActual.$Pool.PSObject.Properties | Where-Object {$_.Name -ne $Coin_Symbol_Base -and $_.Name -ne "$($Coin_Symbol_Base)-Params"} | Foreach-Object {$PoolsActualSave.$Pool | Add-Member $_.Name $_.Value -Force}
+                                                $PoolsActual.$Pool.PSObject.Properties | Where-Object {$_.Name -ne $Coin_Symbol_Base -and $_.Name -ne "${Coin_Symbol_Base}-Params"} | Foreach-Object {$PoolsActualSave.$Pool | Add-Member $_.Name $_.Value -Force}
                                             } else {
                                                 $PoolsActualSave | Add-Member $Pool ($PoolsActual.$Pool) -Force
                                             }
@@ -3235,7 +3334,7 @@ function Start-Setup {
                                                     }
                                     $CoinSetupStep = $CoinSetupSteps.IndexOf($NextSetupStep)
                                     if ($CoinSetupStep -lt 0) {
-                                        Write-Log -Level Error "Unknown goto command `"$($NextSetupStep)`". You should never reach here. Please open an issue on github.com"
+                                        Write-Log -Level Error "Unknown goto command `"$NextSetupStep`". You should never reach here. Please open an issue on github.com"
                                         $CoinSetupStep = $CoinSetupStepBack[$CoinSetupStepBack.Count-1];$CoinSetupStepBack.RemoveAt($CoinSetupStepBack.Count-1)
                                     }
                                 }
@@ -3308,7 +3407,7 @@ function Start-Setup {
                         if ($OCProfile_Device) {$OCProfile_Name += "-$OCProfile_Device"}
 
                         if (-not $OCProfilesActual.$OCProfile_Name) {
-                            if (Read-HostBool "Do you want to create new profile `"$($OCProfile_Name)`"?" -Default $true) {
+                            if (Read-HostBool "Do you want to create new profile `"$OCProfile_Name`"?" -Default $true) {
                                 $OCProfilesActual | Add-Member $OCProfile_Name ([PSCustomObject]@{}) -Force
                                 Set-ContentJson -PathToFile $ConfigFiles["OCProfiles"].Path -Data $OCProfilesActual > $null
                             } else {
@@ -3446,7 +3545,7 @@ function Start-Setup {
                                                     }
                                     $OCProfileSetupStep = $OCProfileSetupSteps.IndexOf($NextSetupStep)
                                     if ($OCProfileSetupStep -lt 0) {
-                                        Write-Log -Level Error "Unknown goto command `"$($NextSetupStep)`". You should never reach here. Please open an issue on github.com"
+                                        Write-Log -Level Error "Unknown goto command `"$NextSetupStep`". You should never reach here. Please open an issue on github.com"
                                         $OCProfileSetupStep = $OCProfileSetupStepBack[$OCProfileSetupStepBack.Count-1];$OCProfileSetupStepBack.RemoveAt($OCProfileSetupStepBack.Count-1)
                                     }
                                 }
@@ -3627,7 +3726,7 @@ function Start-Setup {
                                 "save" {
                                     Write-Host " "
                                     if ($Scheduler_Action -eq "d") {
-                                        if (-not (Read-HostBool -Prompt "Do you really want to delete schedule number $($Index)?" -Default $True | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_})) {throw "cancel"}
+                                        if (-not (Read-HostBool -Prompt "Do you really want to delete schedule number ${Index}?" -Default $True | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_})) {throw "cancel"}
                                         $SchedulerActual = $SchedulerActual | Where Index -ne $Index
                                     } else {
                                         if (-not (Read-HostBool -Prompt "Done! Do you want to save the changed values?" -Default $True | Foreach-Object {if ($Controls -icontains $_) {throw $_};$_})) {throw "cancel"}
@@ -3687,7 +3786,7 @@ function Start-Setup {
                                                 }
                                 $SchedulerSetupStep = $SchedulerSetupSteps.IndexOf($NextSetupStep)
                                 if ($SchedulerSetupStep -lt 0) {
-                                    Write-Log -Level Error "Unknown goto command `"$($NextSetupStep)`". You should never reach here. Please open an issue on github.com"
+                                    Write-Log -Level Error "Unknown goto command `"$NextSetupStep`". You should never reach here. Please open an issue on github.com"
                                     $SchedulerSetupStep = $SchedulerSetupStepBack[$SchedulerSetupStepBack.Count-1];$SchedulerSetupStepBack.RemoveAt($SchedulerSetupStepBack.Count-1)
                                 }
                             }
@@ -3708,7 +3807,7 @@ function Start-Setup {
             $Pool_Name = "MiningRigRentals"
 
             Write-Host " "
-            Write-Host "*** $($Pool_Name) Configuration ***" -BackgroundColor Green -ForegroundColor Black
+            Write-Host "*** $Pool_Name Configuration ***" -BackgroundColor Green -ForegroundColor Black
             Write-HostSetupHints
 
             $MRRSetupDone = $false
@@ -3843,7 +3942,7 @@ function Start-Setup {
                                                 }
                                 $MRRSetupStep = $MRRSetupSteps.IndexOf($NextSetupStep)
                                 if ($MRRSetupStep -lt 0) {
-                                    Write-Log -Level Error "Unknown goto command `"$($NextSetupStep)`". You should never reach here. Please open an issue on github.com"
+                                    Write-Log -Level Error "Unknown goto command `"$NextSetupStep`". You should never reach here. Please open an issue on github.com"
                                     $MRRSetupStep = $MRRSetupStepBack[$MRRSetupStepBack.Count-1];$MRRSetupStepBack.RemoveAt($MRRSetupStepBack.Count-1)
                                 }
                             }

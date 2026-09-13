@@ -11,6 +11,7 @@ class Miner {
     [string]$Version
     [string]$Path
     [string]$Arguments
+    [string]$ArgumentList
     [string]$API
     [int]$Port
     [string[]]$Algorithm
@@ -40,6 +41,7 @@ class Miner {
     [Bool]$Best
     [Bool]$New
     [Int]$Benchmarked
+    [Int]$BenchmarkedOffset = 0
     [string]$LogFile    
     [Bool]$ShowMinerWindow = $false
     [int]$MSIAprofile
@@ -50,6 +52,7 @@ class Miner {
     [string]$BaseName
     [double]$FaultTolerance = 0.1
     [int]$ExtendInterval = 0
+    [int]$SkipSeconds = 0
     [double]$Penalty = 0
     [double[]]$PoolPenalty
     [int]$PostBlockMining = 0
@@ -102,6 +105,8 @@ class Miner {
     $Job
     $EthPillJob
     $WrapperJob
+    $MinerInfo
+    [String]$HashRateRegex = ""
 
     hidden $Data = $null
 
@@ -129,11 +134,11 @@ class Miner {
         return $this.API -match "Wrapper"
     }
 
-    [System.Management.Automation.Job]GetMiningJob() {
+    [object]GetMiningJob() {
         return $this.Job.XJob
     }
 
-    [System.Management.Automation.Job]GetWrapperJob() {
+    [object]GetWrapperJob() {
         if ($Global:IsLinux) {
             return $this.WrapperJob
         } else {
@@ -154,6 +159,7 @@ class Miner {
         $this.Activated++
         $this.Rounds = 0
         $this.IntervalBegin = 0
+        $this.BenchmarkedOffset = 0
         if (-not $this.StartPort) {$this.StartPort = $this.Port}
 
         if (-not $this.Job.XJob) {
@@ -204,12 +210,12 @@ class Miner {
 
             $DeviceVendor = $this.GetVendor()
 
-            $ArgumentList = $this.GetArguments()
+            $this.ArgumentList = $this.GetArguments()
             
             $Prescription = if ($this.EthPillEnable    -ne "disable" -and ($this.BaseAlgorithm -match "^Etc?hash|^UbqHash|^Verthash" | Measure-Object).Count) {$this.EthPillEnable}
                         elseif ($this.EthPillEnableMTP -ne "disable" -and (Compare-Object $this.BaseAlgorithm @("MTP")               -IncludeEqual -ExcludeDifferent | Measure-Object).Count) {$this.EthPillEnableMTP}
 
-            if ($Prescription -and -not ($this.Name -match "^ClaymoreDual" -and $ArgumentList -match "-strap")) {
+            if ($Prescription -and -not ($this.Name -match "^ClaymoreDual" -and $this.ArgumentList -match "-strap")) {
                 $Prescription_Device = $Device | Where-Object {$_.Model_Base -in @("GTX1080","GTX1080Ti","TITANXP")}
                 $Prescription = switch ($Prescription) {
                     "RevA" {"revA";Break}
@@ -232,7 +238,7 @@ class Miner {
             $Now = Get-Date
             $this.StartTime = $Now.ToUniversalTime()
             $this.LogFile   = $Global:ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath(".\Logs\$($this.Name)-$($this.Port)_$($Now.ToString("yyyy-MM-dd_HH-mm-ss")).txt")
-            $this.Job = Start-SubProcess -FilePath $this.Path -ArgumentList $ArgumentList -LogPath $this.LogFile -WorkingDirectory (Split-Path $this.Path) -Priority ($this.DeviceName | ForEach-Object {if ($_ -like "CPU*") {$this.Priorities.CPU} else {$this.Priorities.GPU}} | Measure-Object -Maximum | Select-Object -ExpandProperty Maximum) -CPUAffinity $this.Priorities.CPUAffinity -ShowMinerWindow $this.ShowMinerWindow -IsWrapper $this.IsWrapper() -EnvVars $this.EnvVars -MultiProcess $this.MultiProcess -Executables $this.Executables -ScreenName "$($this.DeviceName -join '_')" -BashFileName "start_$($this.DeviceName -join '_')_$($this.Pool -join '_')_$($this.BaseAlgorithm -join '_')" -Vendor $DeviceVendor -SetLDLIBRARYPATH:$this.SetLDLIBRARYPATH -WinTitle "$($this.Name -replace "-.+$") on $($this.DeviceModel) at $($this.Pool -join '+') with $($this.BaseAlgorithm -join '+')".Trim()
+            $this.Job = Start-SubProcess -FilePath $this.Path -ArgumentList $this.ArgumentList -LogPath $this.LogFile -WorkingDirectory (Split-Path $this.Path) -Priority ($this.DeviceName | ForEach-Object {if ($_ -like "CPU*") {$this.Priorities.CPU} else {$this.Priorities.GPU}} | Measure-Object -Maximum | Select-Object -ExpandProperty Maximum) -CPUAffinity $this.Priorities.CPUAffinity -ShowMinerWindow $this.ShowMinerWindow -IsWrapper $this.IsWrapper() -EnvVars $this.EnvVars -MultiProcess $this.MultiProcess -Executables $this.Executables -ScreenName "$($this.DeviceName -join '_')" -BashFileName "start_$($this.DeviceName -join '_')_$($this.Pool -join '_')_$($this.BaseAlgorithm -join '_')" -Vendor $DeviceVendor -SetLDLIBRARYPATH:$this.SetLDLIBRARYPATH -WinTitle "$($this.Name -replace "-.+$") on $($this.DeviceModel) at $($this.Pool -join '+') with $($this.BaseAlgorithm -join '+')".Trim()
 
             if ($this.Job.XJob) {
                 $this.Status = [MinerStatus]::Running
@@ -276,9 +282,20 @@ class Miner {
     }
 
     hidden StartMiningPreProcess() {
-        $this.Stratum = @()
-        while ($this.Stratum.Count -lt $this.Algorithm.Count) {$this.Stratum += [PSCustomObject]@{Accepted=0;Rejected=0;Stale=0;LastAcceptedTime=$null;LastRejectedTime=$null;LastStaleTime=$null}}
-        $this.RejectedShareRatio = @(0.0) * $this.Algorithm.Count
+        $n = $this.Algorithm.Count
+
+        $this.Stratum = @(1..$n | ForEach-Object {
+            [PSCustomObject]@{
+                Accepted          = 0
+                Rejected          = 0
+                Stale             = 0
+                LastAcceptedTime  = $null
+                LastRejectedTime  = $null
+                LastStaleTime     = $null
+            }
+        })
+
+        $this.RejectedShareRatio = [double[]]::new($n)
         $this.ActiveLast = Get-Date
     }
 
@@ -289,6 +306,7 @@ class Miner {
     hidden StopMiningPostProcess() {
         $this.ResetOCprofile(500) #reset all overclocking
         $this.New = $false
+        $this.ArgumentList = $null
     }
 
     StopMiningPostCleanup() {
@@ -297,7 +315,7 @@ class Miner {
 
     EndOfRoundCleanup() {
         if ($Global:IsLinux -or ($this.API -notmatch "Wrapper")) {
-            if ($this.Job.XJob.HasMoreData) {$this.Job.XJob | Receive-Job > $null}
+            if ($this.Job.XJob.HasMoreData) {Read-MinerJobOutput $this.Job.XJob > $null}
         }
         if (($this.Speed_Live | Measure-Object -Sum).Sum) {$this.ZeroRounds = 0} else {$this.ZeroRounds++}
         $this.Rounds++
@@ -501,12 +519,12 @@ class Miner {
         if ($MJob.HasMoreData) {
             $Date = (Get-Date).ToUniversalTime()
 
-            $MJob | Receive-Job | ForEach-Object {
+            Read-MinerJobOutput $MJob | ForEach-Object {
                 $Line = $_ -replace "`n|`r", ""
                 $Line_Simple = $Line -replace "\x1B\[[0-?]*[ -/]*[@-~]", ""
                 if ($Line_Simple) {
-                    $HashRates = @()
-                    $Devices = @()
+                    $HashRates = [System.Collections.ArrayList]::new()
+                    $Devices   = [System.Collections.ArrayList]::new()
 
                     if ($Line_Simple -match "/s") {
                         $Words = $Line_Simple -split "\s+"
@@ -530,7 +548,7 @@ class Miner {
                                 "ph/s*" {$HashRate *= 1E+15;Break}
                             }
 
-                            $HashRates += $HashRate
+                            [void]$HashRates.Add($HashRate)
                         }
                     }
 
@@ -549,7 +567,7 @@ class Miner {
                                         $Device_Type = ($Words | Select-Object -Index $i)
                                     }
 
-                                    $Devices += "{0}#{1:d2}" -f $Device_Type, $Device
+                                    [void]$Devices.Add("{0}#{1:d2}" -f $Device_Type, $Device)
                                 }
                             }
                         }
@@ -620,7 +638,7 @@ class Miner {
         $sum = 0
         $count = 0
 
-        foreach ($item in $this.Data) {
+        foreach ($item in @($this.Data)) {
             if ($item.Date -lt $Timeframe) { continue }
 
             if ($item.Difficulty -and ($item.Difficulty.$Algorithm -or ($AlgosDiffer -and $item.Difficulty.$AlgorithmBase))) {
@@ -666,7 +684,6 @@ class Miner {
         $AlgosDiffer = $Algorithm -match '-'
         $AlgorithmBase = $Algorithm -replace '\-.*$'
 
-
         if (($this.Data | Where-Object Device | Measure-Object).Count) {
             $HashRates_Devices = @($this.Data | Where-Object Device | Select-Object -ExpandProperty Device -Unique)
         } else {
@@ -675,42 +692,82 @@ class Miner {
 
         $Intervals = [Math]::Max($this.ExtendInterval,1)
         $Timeframe = (Get-Date).ToUniversalTime().AddSeconds( - $this.DataInterval * $Intervals)
+        $TimeframeMin = $this.StartTime.AddSeconds($this.SkipSeconds)
+        if ($Timeframe -lt $TimeframeMin) {
+            $TimeFrame = $TimeframeMin
+        }
         $HashData  = $this.Data | Where-Object {$_.HashRate -and ($_.HashRate.$Algorithm -or ($AlgosDiffer -and $_.HashRate.$AlgorithmBase)) -and ($_.Date -ge $Timeframe)}
         $MaxVariance = if ($this.FaultTolerance) {$this.FaultTolerance} else {0.075}
         $MinHashRate = 1-[Math]::Min($MaxVariance/2,0.1)
+        $MaxHashRate = 1+[Math]::Min($MaxVariance*2,0.1)
 
         $HashRates_Count = $HashRates_Average = $HashRates_Variance = 0
 
         $Steps = if ($this.Rounds -ge 2*$Intervals) {1} else {2}
         for ($Step = 0; $HashData -and ($Step -lt $Steps); $Step++) {
-            $HashRates_Counts = @{}
-            $HashRates_Averages = @{}
-            $HashRates_Variances = @{}
+            $HashRates_Counts     = [System.Collections.Generic.Dictionary[string,int]]::new()
+            $HashRates_Averages   = [System.Collections.Generic.Dictionary[string,
+                                           System.Collections.Generic.List[double]]]::new()
+            $HashRates_Variances  = [System.Collections.Generic.Dictionary[string,
+                                           System.Collections.Generic.List[double]]]::new()
 
             $HashData | ForEach-Object {
                 $Data_HashRates = $_.HashRate.$Algorithm
-                if (-not $Data_HashRates -and $AlgosDiffer) {$Data_HashRates = $_.HashRate.$AlgorithmBase}
+                if (-not $Data_HashRates -and $AlgosDiffer) { $Data_HashRates = $_.HashRate.$AlgorithmBase }
 
                 $Data_Devices = $_.Device
-                if (-not $Data_Devices) {$Data_Devices = $HashRates_Devices}
+                if (-not $Data_Devices) { $Data_Devices = $HashRates_Devices }
 
                 $HashRate = ($Data_HashRates | Measure-Object -Sum).Sum
-                if ($HashRates_Variances."$($Data_Devices -join '-')" -or ($HashRate -gt $HashRates_Average * $MinHashRate)) {
-                    $Data_Devices | ForEach-Object {$HashRates_Counts.$_++}
-                    $Data_Devices | ForEach-Object {$HashRates_Averages.$_ += @($HashRate / $Data_Devices.Count)}
-                    $HashRates_Variances."$($Data_Devices -join '-')" += @($HashRate)
+
+                $key = ($Data_Devices -join '-')
+                $hasBucket = $HashRates_Variances.ContainsKey($key)
+
+                $isAboveMin = $HashRate -gt $HashRates_Average * $MinHashRate
+                $isBelowMax = $HashRates_Average -eq 0 -or ($HashRate -lt $HashRates_Average * $MaxHashRate)
+
+                if ($hasBucket -or ($isAboveMin -and $isBelowMax)) {
+                    $perDevice = if ($Data_Devices.Count) { $HashRate / [double]$Data_Devices.Count } else { 0.0 }
+
+                    foreach ($dev in $Data_Devices) {
+                        if (-not $HashRates_Counts.ContainsKey($dev))   { $HashRates_Counts[$dev] = 0 }
+                        if (-not $HashRates_Averages.ContainsKey($dev)) {
+                            $HashRates_Averages[$dev] = [System.Collections.Generic.List[double]]::new()
+                        }
+
+                        $HashRates_Counts[$dev]++
+                        [void]$HashRates_Averages[$dev].Add($perDevice)
+                    }
+
+                    if (-not $hasBucket) {
+                        $HashRates_Variances[$key] = [System.Collections.Generic.List[double]]::new()
+                    }
+                    [void]$HashRates_Variances[$key].Add([double]$HashRate)
                 }
             }
 
-            $HashRates_Count    = ($HashRates_Counts.Values | ForEach-Object {$_} | Measure-Object -Minimum).Minimum
-            $HashRates_Average  = ($HashRates_Averages.Values | ForEach-Object {$_} | Measure-Object -Average).Average * $HashRates_Averages.Keys.Count
-            $HashRates_Variance = if ($HashRates_Average -and $HashRates_Count -gt 2) {($HashRates_Variances.Keys | ForEach-Object {$_} | ForEach-Object {Get-Sigma $HashRates_Variances.$_} | Measure-Object -Maximum).Maximum / $HashRates_Average} else {1}
+            $sum = 0.0
+            $count = 0
+            foreach ($list in $HashRates_Averages.Values) {
+                foreach ($v in $list) {
+                    $sum += $v
+                    $count++
+                }
+            }
+            $HashRates_Average  = if ($count) { ($sum / $count) * $HashRates_Averages.Count } else { 0 }
+            $HashRates_Count    = ($HashRates_Counts.Values   | Measure-Object -Minimum).Minimum
+            $HashRates_Variance = if ($HashRates_Average -and $HashRates_Count -gt 2) {
+                ($HashRates_Variances.Keys |
+                    ForEach-Object { Get-Sigma $HashRates_Variances[$_] } |
+                    Measure-Object -Maximum).Maximum / $HashRates_Average
+            } else { 1 }
+
             Write-Log -Level Info "$($this.Name): GetHashrate $Algorithm #$($Step) smpl:$HashRates_Count, avg:$([Math]::Round($HashRates_Average,2)), var:$([Math]::Round($HashRates_Variance,3)*100)"
         }
 
         $this.Variance[$this.Algorithm.IndexOf($Algorithm)] = $HashRates_Variance
         
-        if ($Safe -and $this.IsBenchmarking() -and ($this.Benchmarked -lt $Intervals -or $HashRates_Count -lt $this.MinSamples -or $HashRates_Variance -gt $MaxVariance)) {
+        if ($Safe -and $this.IsBenchmarking() -and (($this.Benchmarked - $this.BenchmarkedOffset) -lt $Intervals -or $HashRates_Count -lt $this.MinSamples -or $HashRates_Variance -gt $MaxVariance)) {
             return 0
         }
         else {
@@ -719,7 +776,7 @@ class Miner {
     }
 
     [Bool]IsBenchmarking() {
-        return $this.New -and $this.Benchmarked -lt ($this.MaxBenchmarkRounds + [Math]::Max($this.ExtendInterval,1) - 1)
+        return $this.New -and ($this.Benchmarked - $this.BenchmarkedOffset) -lt ($this.MaxBenchmarkRounds + [Math]::Max($this.ExtendInterval,1) - 1)
     }
 
     [Int64]GetPowerDraw() {
@@ -727,7 +784,7 @@ class Miner {
         $sum = 0
         $count = 0
 
-        foreach ($item in $this.Data) {
+        foreach ($item in @($this.Data)) {
             if ($item.PowerDraw -and $item.Date -ge $TimeFrame) {
                 $sum += $item.PowerDraw
                 $count++
@@ -1032,7 +1089,12 @@ class BzMiner : Miner {
 
     [Void]UpdateMinerData () {
         if ($this.GetStatus() -ne [MinerStatus]::Running) {return}
+        [void]$this.UpdateFromApi()
+        $this.CleanupMinerData()
+    }
 
+    # one poll of the status endpoint; $true when it answered and the data was added
+    hidden [Bool]UpdateFromApi () {
         $Server = "127.0.0.1" #"localhost"
         $Timeout = 10 #seconds
 
@@ -1046,7 +1108,7 @@ class BzMiner : Miner {
         }
         catch {
             Write-Log -Level Info "Failed to connect to miner $($this.Name). "
-            return
+            return $false
         }
 
         $Count = $this.Algorithm.Count
@@ -1083,8 +1145,178 @@ class BzMiner : Miner {
         }
 
         $this.AddMinerData("",$HashRate,$null,$PowerDraw)
+        return $true
+    }
+}
 
+class BzMinerWrapper : BzMiner {
+    # BzMiner v100 keeps hashing while its status endpoint stops answering for good
+    # on some rigs (pearl and ergo on a busy 2-core rig: curl waited 60s for nothing),
+    # and every unanswered poll costs the core loop the full 10s timeout. The API stays
+    # the primary source; after three failed polls in a row it is only retried every
+    # sixth poll, and in between the hashrates come from the console tables that the
+    # log output reprints every 30s:
+    #   |    # | cfg |   tbs | a/r/p |      eff |  pool hr | miner hr | status | pool |
+    #   |  9:0 |  i0 | 1m42s | 2/0/0 | 426.2ghw |  82.99th |  71.47th | Mining | ...  |
+    #   | smry |     | 1m42s | 2/0/0 | 426.2ghw |  82.99th |  71.47th | connected: yes |
+    # the "smry" row carries the rig total, the device table above it the power draw
+    # ("| 9:0 | RTX 3070 | 6.55gb | 8.00gb | 1620 (+100) | 8001 (+2000) | 61% | 167.7w | 62C |").
+    # The columns are located from the header rows, so a custom --mining-columns
+    # still works as long as it keeps "miner hr". The wrapper name makes the Linux
+    # side tail the log file (WrapperJob) exactly like the other console wrappers.
+
+    hidden [Int]$ApiFailures   = 0
+    hidden [Int]$ApiSkipped    = 0
+    hidden [Bool]$ConsoleMode  = $false
+    hidden [Int]$ApiRecovered  = 0
+    hidden [Int]$HrColumn      = -1
+    hidden [Int]$SharesColumn  = -1
+    hidden [Int]$PowerColumn   = -1
+    hidden [Double]$ConsolePower = 0
+    hidden [Int]$TableAlgoIndex  = -1
+
+    # the miner object outlives a restart: a fresh run starts with the API again
+    hidden StartMiningPreProcess() {
+        ([Miner]$this).StartMiningPreProcess()
+        $this.ApiFailures    = 0
+        $this.ApiSkipped     = 0
+        $this.ApiRecovered   = 0
+        $this.ConsoleMode    = $false
+        $this.HrColumn       = -1
+        $this.SharesColumn   = -1
+        $this.PowerColumn    = -1
+        $this.ConsolePower   = 0
+        $this.TableAlgoIndex = -1
+    }
+
+    [Void]UpdateMinerData () {
+        if ($this.GetStatus() -ne [MinerStatus]::Running) {return}
+
+        $ApiOk = $false
+        $TryApi = $true
+        if ($this.ApiFailures -ge 3) {
+            $this.ApiSkipped++
+            if ($this.ApiSkipped -lt 6) {$TryApi = $false} else {$this.ApiSkipped = 0}
+        }
+
+        if ($TryApi) {
+            $ApiOk = $this.UpdateFromApi()
+            if ($ApiOk) {
+                if ($this.ConsoleMode) {
+                    # an endpoint that answers once in a while is not back: the console
+                    # mode is left after two answered retries in a row only, otherwise
+                    # every stray answer buys three more 10s timeouts before the next backoff
+                    $this.ApiRecovered++
+                    if ($this.ApiRecovered -ge 2) {
+                        Write-Log "$($this.Name): status API answers again, back to API hashrates"
+                        $this.ConsoleMode  = $false
+                        $this.ApiFailures  = 0
+                        $this.ApiSkipped   = 0
+                        $this.ApiRecovered = 0
+                    }
+                } else {
+                    $this.ApiFailures = 0
+                    $this.ApiSkipped  = 0
+                }
+            } else {
+                $this.ApiRecovered = 0
+                $this.ApiFailures++
+                if ($this.ApiFailures -eq 3) {
+                    Write-Log -Level Warn "$($this.Name): status API does not answer, reading hashrates from the console output"
+                    $this.ConsoleMode = $true
+                }
+            }
+        }
+
+        # the console output is drained every poll (the base class does that at the end
+        # of a round for non-wrapper miners only); its samples are used while the API
+        # fails, so a working API never gets doubled up by the 30s table
+        $MJob = if ($Global:IsLinux) {$this.WrapperJob} else {$this.Job.XJob}
+        if ($MJob.HasMoreData) {
+            $UseConsole = -not $ApiOk
+            Read-MinerJobOutput $MJob | ForEach-Object {
+                $Line = "$_" -replace "`n|`r", ""
+                $Line_Simple = $Line -replace "\x1B\[[0-?]*[ -/]*[@-~]", ""
+                if ($Line_Simple) {[void]$this.ParseConsoleLine($Line_Simple,$UseConsole)}
+            }
+        }
+        $MJob = $null
         $this.CleanupMinerData()
+    }
+
+    # "71.47th" / "63.46gh" / "0.00h" -> H/s
+    hidden [Double]ParseHashCell ([String]$Cell) {
+        if ($Cell -match "^((?:\d+[\.,])?\d+)\s*([kmgtpe]?)h$") {
+            $Value = [Double]($Matches[1] -replace ',','.')
+            switch ($Matches[2].ToLower()) {
+                "k" {$Value *= 1E+3;Break}
+                "m" {$Value *= 1E+6;Break}
+                "g" {$Value *= 1E+9;Break}
+                "t" {$Value *= 1E+12;Break}
+                "p" {$Value *= 1E+15;Break}
+                "e" {$Value *= 1E+18;Break}
+            }
+            return $Value
+        }
+        return 0
+    }
+
+    # feeds one console line; $true when a summary row produced a data point
+    hidden [Bool]ParseConsoleLine ([String]$Line, [Bool]$Emit) {
+        # "---- pearl ------ stratum+tcp://host:port ----" opens the table of that algorithm
+        if ($Line -match "^-{2,}\s+(\S+)\s+-{2,}\s+\S+://") {
+            $this.TableAlgoIndex++
+            return $false
+        }
+        # "---- 09-04 16:40:38 ---- uptime: 0d 0h 3m 37s ---- bzminer v100.11 ----" closes a block
+        if ($Line -match "^-{2,}.*\buptime:") {
+            $this.TableAlgoIndex = -1
+            return $false
+        }
+        if (-not $Line.StartsWith("|")) {return $false}
+
+        $Cells = @($Line.Trim('|') -split '\|' | ForEach-Object {$_.Trim()})
+        if ($Cells.Count -lt 3) {return $false}
+
+        if ($Cells[0] -eq "#") {
+            # a header row: the mining table names "miner hr", the device table "power"
+            $HrIx = [Array]::IndexOf($Cells,"miner hr")
+            if ($HrIx -ge 0) {
+                $this.HrColumn     = $HrIx
+                $this.SharesColumn = [Array]::IndexOf($Cells,"a/r/p")
+            } else {
+                $PowerIx = [Array]::IndexOf($Cells,"power")
+                if ($PowerIx -ge 0) {
+                    $this.PowerColumn  = $PowerIx
+                    $this.ConsolePower = 0
+                }
+            }
+            return $false
+        }
+
+        if ($Cells[0] -eq "smry") {
+            if ($this.HrColumn -lt 0 -or $this.HrColumn -ge $Cells.Count) {return $false}
+            $HashRate_Value = $this.ParseHashCell($Cells[$this.HrColumn])
+            if ($HashRate_Value -le 0) {return $false}
+
+            $Index = if ($this.TableAlgoIndex -gt 0 -and $this.TableAlgoIndex -lt $this.Algorithm.Count) {$this.TableAlgoIndex} else {0}
+            $HashRate_Name = [String]$this.Algorithm[$Index]
+
+            if (-not $Emit) {return $false}
+
+            if ($this.SharesColumn -ge 0 -and $this.SharesColumn -lt $Cells.Count -and $Cells[$this.SharesColumn] -match "^(\d+)/(\d+)/(\d+)$") {
+                $this.UpdateShares($Index,[Double]$Matches[1],[Double]$Matches[2],0)
+            }
+
+            $this.AddMinerData($Line,[PSCustomObject]@{$HashRate_Name = $HashRate_Value},$null,$this.ConsolePower)
+            return $true
+        }
+
+        # a device row of the device table: "| 9:0 | RTX 3070 | ... | 167.7w | 62C |"
+        if ($Cells[0] -match "^\d+:\d+$" -and $this.PowerColumn -ge 0 -and $this.PowerColumn -lt $Cells.Count -and $Cells[$this.PowerColumn] -match "^((?:\d+[\.,])?\d+)\s*w$") {
+            $this.ConsolePower += [Double]($Matches[1] -replace ',','.')
+        }
+        return $false
     }
 }
 
@@ -1320,7 +1552,7 @@ class DynexsolveWrapper : Miner {
         if ($MJob.HasMoreData) {
             $HashRate_Name = $this.Algorithm[0]
 
-            $MJob | Receive-Job | ForEach-Object {
+            Read-MinerJobOutput $MJob | ForEach-Object {
                 $Line = $_ -replace "`n|`r", ""
                 $Line_Simple = $Line -replace "\x1B\[[0-?]*[ -/]*[@-~]", ""
                 if ($Line_Simple -match "\[GPU \*\].+ HASHRATE ([\d\s\./hkMGTPs]+?) \|") {
@@ -1500,7 +1732,7 @@ class EthminerWrapper : Miner {
         if ($MJob.HasMoreData) {
             $HashRate_Name = $this.Algorithm[0]
 
-            $MJob | Receive-Job | ForEach-Object {
+            Read-MinerJobOutput $MJob | ForEach-Object {
                 $Line = $_ -replace "`n|`r", ""
                 $Line_Simple = $Line -replace "\x1B\[[0-?]*[ -/]*[@-~]", ""
                 if ($Line_Simple) {
@@ -1581,8 +1813,8 @@ class Fireice : Miner {
             }
             if (-not (Test-Path $HwConfigFile)) {
                 Remove-Item "$Miner_Path\config_$($Miner_Vendor.ToLower())-*.txt" -Force -ErrorAction Ignore
-                $ArgumentList = "--poolconf $PoolConfigFN --config $ConfigFN --$($Miner_Vendor.ToLower()) $HwConfigFN $($Parameters.Params)".Trim()
-                $Job = Start-SubProcess -FilePath $this.Path -ArgumentList $ArgumentList -LogPath $this.LogFile -WorkingDirectory $Miner_Path -Priority ($this.DeviceName | ForEach-Object {if ($_ -like "CPU*") {$this.Priorities.CPU} else {$this.Priorities.GPU}} | Measure-Object -Maximum | Select-Object -ExpandProperty Maximum) -ShowMinerWindow $true -IsWrapper ($this.API -eq "Wrapper") -Executables $this.Executables -SetLDLIBRARYPATH:$this.SetLDLIBRARYPATH
+                $ArgumentListSP = "--poolconf $PoolConfigFN --config $ConfigFN --$($Miner_Vendor.ToLower()) $HwConfigFN $($Parameters.Params)".Trim()
+                $Job = Start-SubProcess -FilePath $this.Path -ArgumentList $ArgumentListSP -LogPath $this.LogFile -WorkingDirectory $Miner_Path -Priority ($this.DeviceName | ForEach-Object {if ($_ -like "CPU*") {$this.Priorities.CPU} else {$this.Priorities.GPU}} | Measure-Object -Maximum | Select-Object -ExpandProperty Maximum) -ShowMinerWindow $true -IsWrapper ($this.API -eq "Wrapper") -Executables $this.Executables -SetLDLIBRARYPATH:$this.SetLDLIBRARYPATH
                 if ($Job.XJob) {
                     $wait = 0
                     While ($wait -lt 60) {
@@ -2033,35 +2265,36 @@ class Nanominer : Miner {
         $ConfigFile = "config_$($this.Pool -join '-')-$($this.BaseAlgorithm -join '-')-$($this.DeviceModel)$(if ($Parameters.SSL){"-ssl"}).txt"
 
         if (Test-Path $this.Path) {
-            $FileC = @(
+            $FileC = [System.Collections.ArrayList]::new(@(
                 ";Automatic config file created by RainbowMiner",
                 ";Do not edit!",
                 "mport=0",
                 "webPort=$($this.Port)",
                 "Watchdog=false",
                 "noLog=true"
-            )
+            ))
 
             foreach ($Algo in $Parameters.Algorithms) {
-                $FileC += @(
+                [void]$FileC.AddRange(@(
                                 "[$($Algo.Algo)]",
                                 "wallet=$($Algo.Wallet)",
                                 "rigName=$($Algo.Worker)",
                                 "pool1=$($Algo.Host):$($Algo.Port)",
                                 "devices=$(if ($Parameters.Devices -ne $null) {$Parameters.Devices -join ','})",
                                 "useSSL=$(if ($Algo.SSL) {"true"} else {"false"})"
-                            )
-                if ($Algo.PaymentId -ne $null) {$FileC += "paymentId=$($Algo.PaymentId)"}
-                if ($Algo.Pass)                {$FileC += "rigPassword=$($Algo.Pass)"}
-                if ($Algo.Email)               {$FileC += "email=$($Algo.Email)"}
-                if ($Algo.Coin)                {$FileC += "coin=$($Algo.Coin)"}
-                if ($Algo.Protocol)            {$FileC += "protocol=$($Algo.Protocol)"}
-                if ($Algo.Algo -eq "zil")      {$FileC += "zilEpoch=0"}
-                if ($Parameters.LHR)           {$FileC += "lhr=$($Parameters.LHR)"}
-                if ($Parameters.Threads)       {$FileC += "cpuThreads=$($Parameters.Threads)"}                
+                            ))
+                if ($Algo.PaymentId -ne $null) {[void]$FileC.Add("paymentId=$($Algo.PaymentId)")}
+                if ($Algo.Pass)                {[void]$FileC.Add("rigPassword=$($Algo.Pass)")}
+                if ($Algo.Email)               {[void]$FileC.Add("email=$($Algo.Email)")}
+                if ($Algo.Coin)                {[void]$FileC.Add("coin=$($Algo.Coin)")}
+                if ($Algo.Protocol)            {[void]$FileC.Add("protocol=$($Algo.Protocol)")}
+                if ($Algo.Algo -eq "zil")      {[void]$FileC.Add("zilEpoch=0")}
+                if ($Parameters.LHR)           {[void]$FileC.Add("lhr=$($Parameters.LHR)")}
+                if ($Parameters.Threads)       {[void]$FileC.Add("cpuThreads=$($Parameters.Threads)")}
             }
 
             $FileC | Out-File "$($Miner_Path)\$($ConfigFile)" -Encoding utf8
+            $FileC = $null
         }
 
         return "$($ConfigFile)$(if ($Parameters.Params) {" $($Parameters.Params)"})"
@@ -2092,7 +2325,11 @@ class Nanominer : Miner {
         if ($HashRate_Ix0 -match "^(Ethash|KawPOW)(\d+|low|NH)") {$HashRate_Ix0 = $Matches[1]}
         elseif ($HashRate_Ix0 -eq "SCCPow") {$Hashrate_Ix0 = "FiroPow"}
 
-        $Algos          = $Data.Algorithms[0].PSObject.Properties.Name
+        if ($Data -and $Data.Algorithms -and $Data.Algorithms[0]) {
+            $Algos = $Data.Algorithms[0].PSObject.Properties.Name
+        } else {
+            $Algos = @()
+        }
 
         if ($this.Algorithm.Count -gt 1) {
             $HashRate_Name1 = [String]$this.Algorithm[1]
@@ -2356,6 +2593,23 @@ class OneZeroMiner : Miner {
             $Accepted_Shares = [Int64]($Data_Algos.total_accepted_shares)
             $Rejected_Shares = [Int64]($Data_Algos.total_rejected_shares)
             $this.UpdateShares(0,$Accepted_Shares,$Rejected_Shares)
+
+            if ($this.Algorithm[1]) {
+                $HashRate_Name = [String]$this.Algorithm[1]
+                $HashRate_Name_0 = [String]$this.BaseAlgorithm[1]
+
+                $Data_Algos     = $Data.algos | WHere-Object {$HashRate_Name_0 -eq (Get-Algorithm $_.name)}
+
+                $HashRate_Value = [Double]($Data_Algos.total_hashrate)
+
+                if ($HashRate_Name -and $HashRate_Value -gt 0) {
+                    $HashRate | Add-Member @{$HashRate_Name = $HashRate_Value}
+
+                    $Accepted_Shares = [Int64]($Data_Algos.total_accepted_shares)
+                    $Rejected_Shares = [Int64]($Data_Algos.total_rejected_shares)
+                    $this.UpdateShares(1,$Accepted_Shares,$Rejected_Shares)
+                }
+            }
         }
 
         $this.AddMinerData("",$HashRate,$null,$PowerDraw)
@@ -2449,7 +2703,7 @@ class RHWrapper : Miner {
         if ($MJob.HasMoreData) {
             $HashRate_Name = $this.Algorithm[0]
 
-            $MJob | Receive-Job | ForEach-Object {
+            Read-MinerJobOutput $MJob | ForEach-Object {
                 $Line = $_ -replace "`n|`r", ""
                 $Line_Simple = $Line -replace "\x1B\[[0-?]*[ -/]*[@-~]", ""
                 if ($Line_Simple) {
@@ -2595,7 +2849,7 @@ class SixMinerWrapper : Miner {
         if ($MJob.HasMoreData) {
             $HashRate_Name = $this.Algorithm[0]
 
-            $MJob | Receive-Job | ForEach-Object {
+            Read-MinerJobOutput $MJob | ForEach-Object {
                 $Line = $_ -replace "`n|`r", ""
                 $Line_Simple = $Line -replace "\x1B\[[0-?]*[ -/]*[@-~]", ""
                 if ($Line_Simple -match "^.+?(speed|accepted)\s+(.+?)$") {
@@ -2639,7 +2893,7 @@ class SPMinerWrapper : Miner {
         if ($MJob.HasMoreData) {
             $HashRate_Name = $this.Algorithm[0]
 
-            $MJob | Receive-Job | ForEach-Object {
+            Read-MinerJobOutput $MJob | ForEach-Object {
                 $Line = $_ -replace "`n|`r", ""
                 $Line_Simple = $Line -replace "\x1B\[[0-?]*[ -/]*[@-~]", ""
                 if ($Line_Simple -match "accepted:\s*(\d+)/(\d+).+\s+([\d\.]+)\s+([hkMGTP]+)/s") {
@@ -2733,6 +2987,73 @@ class SrbMiner : Miner {
 
 class SrbMinerMulti : Miner {
 
+    [String]GetArguments() {
+        $Arguments = $this.Arguments -replace "\`$mport",$this.Port
+        if ($Arguments -notlike "{*}") {return $Arguments}
+
+        $Miner_Path        = Split-Path $this.Path
+        $Parameters        = $Arguments | ConvertFrom-Json
+
+        $ConfigName        = "$($this.BaseAlgorithm -join '-')_$($Parameters.HwSig)"
+
+        $ConfigFN          = "config_$($ConfigName).json"
+        $ConfigFile        = Join-Path $Miner_Path $ConfigFN
+
+        $AddParams         = ""
+
+        try {
+            if (-not $this.MinerInfo) {
+                $this.MinerInfo = [PSCustomObject]@{
+                    config_name = $ConfigFN
+                    algo_count  = $this.Algorithm.Count
+                    gpu_count   = $Parameters.Devices.Count
+                    tuning_done = $false
+                    failed      = $false
+                    autotune    = $Parameters.AutoTune
+                    intensities = @{}   # Hashtable: "$algoIndex|$deviceId" -> int
+                }
+            }
+            if (Test-Path $ConfigFile) {
+                $MinerNew = [Boolean]($this.BaseAlgorithm | Where-Object {-not (Get-Stat -Name "$($this.Name)_$($_)_HashRate" -Sub $Global:DeviceCache.DevicesToVendors[$this.DeviceModel])})
+                $MinerInfoRaw = Get-Content $ConfigFile -Raw -ErrorAction Ignore | ConvertFrom-Json -ErrorAction Ignore
+                if (-not $MinerInfoRaw -or 
+                    ($MinerNew -and -not $this.Benchmarked) -or 
+                    $MinerInfoRaw.algo_count -ne $this.MinerInfo.algo_count -or 
+                    $MinerInfoRaw.gpu_count -ne $this.MinerInfo.gpu_count -or 
+                    $MinerInfoRaw.config_name -ne $this.MinerInfo.config_name) {
+                    Remove-Item $ConfigFile -Force -ErrorAction Ignore
+                } else {
+                    if ($MinerInfoRaw.intensities) {
+                        $MinerInfoRaw.intensities.PSObject.Properties | ForEach-Object {
+                            $this.MinerInfo.Intensities[$_.Name] = [int]$_.Value
+                        }
+                    }
+                    $this.MinerInfo.tuning_done  = [bool]$MinerInfoRaw.tuning_done
+                    $this.MinerInfo.failed       = $false
+                    $MinerInfoRaw = $null
+                }
+            }
+        }
+        catch {
+            Write-Log -Level Warn "Reading config file failed ($($this.BaseName) $($this.BaseAlgorithm -join '-')@$($this.Pool -join '-')}) [Error: '$($_.Exception.Message)']."
+        }
+
+        if ($this.MinerInfo.tuning_done -and $Parameters.Arguments -notmatch "--gpu-intensity") {
+            for ($i = 0; $i -lt $this.MinerInfo.algo_count; $i++) {
+                $IntensityList = for ($j = 0; $j -lt $this.MinerInfo.gpu_count; $j++) { $this.MinerInfo.intensities["$i|$j"] }
+                if ($IntensityList -notcontains $null) {
+                    $AddParams = " --gpu-intensity $($IntensityList -join ",")"
+                }
+            }
+        }
+
+        return "$($Parameters.Arguments.Trim())$($AddParams)"
+    }
+
+    [Bool]IsBenchmarking() {
+        return ([Miner]$this).IsBenchmarking() -or ($this.MinerInfo -and $this.MinerInfo.algo_count -eq 1 -and -not $this.MinerInfo.failed -and -not $this.MinerInfo.tuning_done -and $this.RunningTime.TotalMinutes -lt 10)
+    }
+
     [Void]UpdateMinerData () {
         if ($this.GetStatus() -ne [MinerStatus]::Running) {return}
 
@@ -2740,33 +3061,79 @@ class SrbMinerMulti : Miner {
         $Timeout = 10 #seconds
         $DualMining = $this.Algorithm.Count -eq 2
 
-        $Request = ""
         $Response = ""
 
         $HashRate   = [PSCustomObject]@{}
         $Difficulty = [PSCustomObject]@{}
 
+        $Type = if ($this.DeviceModel -eq "CPU") {"cpu"} else {"gpu"}
+
         try {
-            $Data = Invoke-GetUrl "http://$($Server):$($this.Port)" -Timeout $Timeout -ForceHttpClient
+            $Response = Invoke-GetUrl "http://$($Server):$($this.Port)" -Timeout $Timeout -ForceHttpClient
         }
         catch {
+            if ($this.MinerInfo) {$this.MinerInfo.failed = $true}
             Write-Log -Level Info "Failed to connect to miner $($this.Name). "
             return
         }
-
-        $Type = if ($Data.total_cpu_workers -gt 0) {"cpu"} else {"gpu"}
 
         $BaseAlgorithm0 = [String]$this.BaseAlgorithm[0]
 
         if ($BaseAlgorithm0 -match "^(Ethash|KawPOW)(\d+|low|NH)") {$BaseAlgorithm0 = $Matches[1]}
         elseif ($BaseAlgorithm0 -eq "SCCPow") {$BaseAlgorithm0 = "FiroPow"}
 
-        $Data0 = $Data.algorithms | Where-Object {"$(Get-Algorithm $_.name)" -eq $BaseAlgorithm0} | Select-Object -First 1
+        $Data0 = $Response.algorithms | Where-Object {"$(Get-Algorithm $_.name)" -eq $BaseAlgorithm0} | Select-Object -First 1
 
-        $HashRate_Name = [String]$this.Algorithm[0]
-        $HashRate_Value = if ($Type -eq "cpu" -or $Data.mining_time -gt 20) {[double]$Data0.hashrate.$Type.total} else {0}
+        $HashRate_Name  = [String]$this.Algorithm[0]
+        $HashRate_Value = [double]$Data0.hashrate.$Type.total
 
-        $PowerDraw = if ($Type -eq "gpu") {($Data.gpu_devices | Foreach-Object {$_.asic_power} | Measure-Object -Sum).Sum} else {$null}
+        if ($Type -eq "gpu") {
+            if ($Response.mining_time -lt 20) {
+                $HashRate_Value = 0
+                if ($this.MinerInfo) {$this.MinerInfo.failed = $false}
+            } else {
+                if ($HashRate_Value -gt 0) {
+                    $AnyMissing = $Response.algorithms | ForEach-Object {
+                        $algo = $_
+                        $Response.gpu_devices.device | Where-Object {-not $algo.hashrate.gpu.$_}
+                    } | Select-Object -First 1
+                    if ($AnyMissing) {$HashRate_Value = 0}
+                }
+                if ($this.MinerInfo) {$this.MinerInfo.failed = $HashRate_Value -eq 0}
+            }
+        }
+
+        $PowerDraw = if ($Type -eq "gpu") {($Response.gpu_devices | Foreach-Object {$_.asic_power} | Measure-Object -Sum).Sum} else {$null}
+
+        if ($this.MinerInfo -and $Response.gpu_devices.Count -and -not $this.MinerInfo.failed -and -not $this.MinerInfo.tuning_done) {
+            $ActualGpuCount  = $Response.gpu_devices.Count
+            $ActualAlgoCount = $Response.algorithms.Count
+ 
+            for ($i = 0; $i -lt $this.MinerInfo.algo_count; $i++) {
+                if ($i -ge $ActualAlgoCount) {break}
+                for ($j = 0; $j -lt $ActualGpuCount; $j++) {
+                    $d = $Response.gpu_devices[$j].device
+                    if (-not $d) {continue}
+                    $val = $Response.algorithms[$i].gpu_autotune_results.$d
+                    $this.MinerInfo.intensities["$i|$j"] = [int]$val
+                }
+            }
+
+            $TuningDone = $this.MinerInfo.tuning_done
+
+            $ExpectedCount = $this.MinerInfo.algo_count * $this.MinerInfo.gpu_count
+            $this.MinerInfo.tuning_done = $this.MinerInfo.intensities.Count -ge $ExpectedCount -and ($this.MinerInfo.intensities.Values | Where-Object {$_ -eq 0}).Count -eq 0
+
+            if (-not $TuningDone -and $this.MinerInfo.tuning_done) {
+                $ConfigFile = Join-Path (Split-Path $this.Path) $this.MinerInfo.config_name
+                $this.MinerInfo | ConvertTo-Json -Depth 10 | Set-Content $ConfigFile -Force
+                $this.BenchmarkedOffset = $this.Benchmarked
+            }
+
+            if ($this.MinerInfo.autotune -and -not $this.MinerInfo.tuning_done) {
+                $HashRate_Value = 0
+            }
+        }
 
         if ($HashRate_Name -and $HashRate_Value -gt 0) {
             $HashRate   | Add-Member @{$HashRate_Name = $HashRate_Value}
@@ -2780,7 +3147,7 @@ class SrbMinerMulti : Miner {
 
             if ($DualMining) {
 
-                $Data0 = $Data.algorithms | Where-Object {"$(Get-Algorithm $_.name)" -eq [String]$this.BaseAlgorithm[1]} | Select-Object -First 1
+                $Data0 = $Response.algorithms | Where-Object {"$(Get-Algorithm $_.name)" -eq [String]$this.BaseAlgorithm[1]} | Select-Object -First 1
 
                 $HashRate_Name = [String]$this.Algorithm[1]
                 $HashRate_Value = [double]$Data0.hashrate.$Type.total
@@ -2855,7 +3222,7 @@ class SwapminerWrapper : Miner {
         if ($MJob.HasMoreData) {
             $HashRate_Name = $this.Algorithm[0]
 
-            $MJob | Receive-Job | ForEach-Object {
+            Read-MinerJobOutput $MJob | ForEach-Object {
                 $Line = $_ -replace "`n|`r", ""
                 $Line_Simple = $Line -replace "\x1B\[[0-?]*[ -/]*[@-~]", ""
                 if ($Line_Simple) {
@@ -2935,7 +3302,7 @@ class TeamblackWrapper : Miner {
         if ($MJob.HasMoreData) {
             $HashRate_Name = $this.Algorithm[0]
 
-            $MJob | Receive-Job | ForEach-Object {
+            Read-MinerJobOutput $MJob | ForEach-Object {
                 $Line = $_ -replace "`n|`r", ""
                 $Line_Simple = $Line -replace "\x1B\[[0-?]*[ -/]*[@-~]", ""
                 if ($Line_Simple -notmatch "GPU\d" -and $Line_Simple -match "([\d\s\./hkMGTPs]+?)(\d+)/(\d+)[/\s].*\([\d\.]+\)$") {
@@ -3060,7 +3427,7 @@ class VerthashWrapper : Miner {
         if ($MJob.HasMoreData) {
             $HashRate_Name = $this.Algorithm[0]
 
-            $MJob | Receive-Job | ForEach-Object {
+            Read-MinerJobOutput $MJob | ForEach-Object {
                 $Line = $_ -replace "`n|`r"
                 $Line_Simple = $Line -replace "\x1B\[[0-?]*[ -/]*[@-~]"
                 if ($Line_Simple -match "^.+?accepted[:\s]+(\d+)/(\d+).+hashrate[^\d]+(.+?)\s+(.+?)/s") {
@@ -3135,7 +3502,142 @@ class WildRig : Miner {
     }
 }
 
+class TTminerWrapper : Miner {
+    [Double]$MaxPowerDraw = 0
+
+    [Void]UpdateMinerData () {
+        $MJob = if ($Global:IsLinux) {$this.WrapperJob} else {$this.Job.XJob}
+        if ($MJob.HasMoreData) {
+            $HashRate_Name = [String]$this.Algorithm[0]
+
+            Read-MinerJobOutput $MJob | ForEach-Object {
+                $Line = $_ -replace "`n|`r", ""
+                $Line_Simple = $Line -replace "\x1B\[[0-?]*[ -/]*[@-~]", ""
+
+                # TT-Miner prints a summary block every report interval. Only the
+                # whole-rig line counts: an asterisk marks live values
+                # ("All[EPIC]: *59.38 MH/s [A47:R0:S1 2.1%] 626 W"), a minus
+                # repeats stale values while the GPUs sit idle between jobs
+                if ($Line_Simple -match "All\[[^\]]*\]:\s+([\*-])((?:\d+[\.,])?\d+)\s*([kMGTP]?)H/s") {
+                    $Line_Live = $Matches[1] -eq "*"
+                    $HashRate = [Double]($Matches[2] -replace ',','.')
+                    switch -casesensitive ($Matches[3]) {
+                        "k" {$HashRate *= 1E+3;Break}
+                        "M" {$HashRate *= 1E+6;Break}
+                        "G" {$HashRate *= 1E+9;Break}
+                        "T" {$HashRate *= 1E+12;Break}
+                        "P" {$HashRate *= 1E+15;Break}
+                    }
+
+                    if ($HashRate -gt 0) {
+                        $PowerDraw = if ($Line_Simple -match "\]\s+((?:\d+[\.,])?\d+)\s+W\s") {[Double]($Matches[1] -replace ',','.')} else {$null}
+                        if ($PowerDraw -gt $this.MaxPowerDraw) {$this.MaxPowerDraw = $PowerDraw}
+
+                        # TT-Miner's workers can die silently (seen after a pool event):
+                        # the stats thread keeps printing the frozen averages while the
+                        # GPUs sit at idle clocks - once with a live asterisk, once as
+                        # an endless stale-minus tail, so check both variants. Only the
+                        # share age ("last: MM:SS") and the power draw stay honest,
+                        # so require both signals before flagging the miner crashed
+                        $LastShare_Sec = if ($Line_Simple -match "last:\s+(\d+):(\d+)\s*$") {[int]$Matches[1] * 60 + [int]$Matches[2]} else {-1}
+
+                        if ($LastShare_Sec -gt 300 -and $PowerDraw -gt 0 -and $PowerDraw -lt $this.MaxPowerDraw * 0.25) {
+                            if (-not $this.Restart) {
+                                Write-Log -Level Warn "$($this.Name): appears crashed (no share for $($LastShare_Sec)s, power $($PowerDraw)W vs. peak $($this.MaxPowerDraw)W) - restarting miner"
+                                $this.Restart = $true
+                            }
+                        } elseif ($Line_Live) {
+                            if ($Line_Simple -match "\[A(\d+):R(\d+):S(\d+)") {
+                                $this.UpdateShares(0,[Double]$Matches[1],[Double]$Matches[2],[Double]$Matches[3])
+                            }
+
+                            $this.AddMinerData($Line_Simple,[PSCustomObject]@{$HashRate_Name = $HashRate},$null,$PowerDraw)
+                        }
+                    }
+                }
+            }
+        }
+        $MJob = $null
+        $this.CleanupMinerData()
+    }
+}
+
+
 class Wrapper : Miner {
+}
+
+
+class CustomWrapper : Miner {
+    # Generic stdout wrapper for user-defined miners (Config\customminers.config.txt)
+    # with a HashRateRegex: value = named group "hashrate" or "value", else group 1;
+    # unit = named group "unit", else group 2 (k/M/G/T/P prefix, "h/s" optional);
+    # optional named groups "accepted" / "rejected" feed the share counters.
+    # An invalid regex is reported once and the base parser takes over.
+
+    hidden [Bool]$RegexFailed = $false
+    hidden $Regex = $null
+
+    [Void]UpdateMinerData () {
+        if ($this.HashRateRegex -eq "" -or $this.RegexFailed) {
+            ([Miner]$this).UpdateMinerData()
+            return
+        }
+
+        if ($this.Regex -eq $null -or $this.Regex.ToString() -cne $this.HashRateRegex) {
+            try {
+                $this.Regex = [regex]::new($this.HashRateRegex, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+            } catch {
+                Write-Log -Level Warn "Custom miner $($this.BaseName): invalid HashRateRegex ($($_.Exception.Message)), using the generic wrapper parser instead"
+                $this.RegexFailed = $true
+                ([Miner]$this).UpdateMinerData()
+                return
+            }
+        }
+
+        $MJob = if ($Global:IsLinux) {$this.WrapperJob} else {$this.Job.XJob}
+        if ($MJob.HasMoreData) {
+            $Rx = $this.Regex
+
+            Read-MinerJobOutput $MJob | ForEach-Object {
+                $Line = $_ -replace "`n|`r", ""
+                $Line_Simple = $Line -replace "\x1B\[[0-?]*[ -/]*[@-~]", ""
+                if ($Line_Simple) {
+                    $m = $Rx.Match($Line_Simple)
+                    if ($m.Success) {
+                        $HashRate = 0.0
+                        $g = $m.Groups["hashrate"]
+                        if (-not $g.Success) {$g = $m.Groups["value"]}
+                        if (-not $g.Success) {$g = $m.Groups[1]}
+                        if ($g.Success) {$HashRate = ($g.Value -replace ",","." -as [Decimal])}
+
+                        $gu = $m.Groups["unit"]
+                        if (-not $gu.Success) {$gu = $m.Groups[2]}
+                        $HashRate_Unit = if ($gu.Success) {$gu.Value.Trim()} else {""}
+
+                        switch -regex ($HashRate_Unit) {
+                            "^k" {$HashRate *= 1E+3;Break}
+                            "^m" {$HashRate *= 1E+6;Break}
+                            "^g" {$HashRate *= 1E+9;Break}
+                            "^t" {$HashRate *= 1E+12;Break}
+                            "^p" {$HashRate *= 1E+15;Break}
+                        }
+
+                        $ga = $m.Groups["accepted"]
+                        $gr = $m.Groups["rejected"]
+                        if ($ga.Success -and $gr.Success -and $ga.Value -match "^\d+$" -and $gr.Value -match "^\d+$" -and $this.Stratum -and $this.Stratum.Count -gt 0) {
+                            $this.UpdateShares(0,[Double]$ga.Value,[Double]$gr.Value)
+                        }
+
+                        if ($HashRate -gt 0) {
+                            $this.AddMinerData($Line_Simple,[PSCustomObject]@{[String]$this.Algorithm[0] = $HashRate})
+                        }
+                    }
+                }
+            }
+        }
+        $MJob = $null
+        $this.CleanupMinerData()
+    }
 }
 
 
@@ -3271,8 +3773,8 @@ class Xmrig : Miner {
             if (-not ($ThreadsConfig | Measure-Object).Count) {
                 $Parameters.Config | ConvertTo-Json -Depth 10 | Set-Content $ThreadsConfigFile -Force
 
-                $ArgumentList = ("$($Parameters.PoolParams) --config=$ThreadsConfigFN $($Parameters.DeviceParams) $($Parameters.Params)" -replace "\s+",' ').Trim()
-                $Job = Start-SubProcess -FilePath $this.Path -ArgumentList $ArgumentList -WorkingDirectory $Miner_Path -LogPath $LogFile -Priority ($this.DeviceName | ForEach-Object {if ($_ -like "CPU*") {$this.Priorities.CPU} else {$this.Priorities.GPU}} | Measure-Object -Maximum | Select-Object -ExpandProperty Maximum) -ShowMinerWindow $true -IsWrapper ($this.API -eq "Wrapper") -Executables $this.Executables -SetLDLIBRARYPATH:$this.SetLDLIBRARYPATH
+                $ArgumentListSP = ("$($Parameters.PoolParams) --config=$ThreadsConfigFN $($Parameters.DeviceParams) $($Parameters.Params)" -replace "\s+",' ').Trim()
+                $Job = Start-SubProcess -FilePath $this.Path -ArgumentList $ArgumentListSP -WorkingDirectory $Miner_Path -LogPath $LogFile -Priority ($this.DeviceName | ForEach-Object {if ($_ -like "CPU*") {$this.Priorities.CPU} else {$this.Priorities.GPU}} | Measure-Object -Maximum | Select-Object -ExpandProperty Maximum) -ShowMinerWindow $true -IsWrapper ($this.API -eq "Wrapper") -Executables $this.Executables -SetLDLIBRARYPATH:$this.SetLDLIBRARYPATH
                 if ($Job.XJob) {
                     $wait = 0
                     While ($wait -lt 60) {
@@ -3400,8 +3902,8 @@ class Xmrig3 : Miner {
             if (-not ($ThreadsConfig.$Algo | Measure-Object).Count -and -not ($ThreadsConfig.$Algo0 | Measure-Object).Count) {
                 $Parameters.Config | ConvertTo-Json -Depth 10 | Set-Content $ThreadsConfigFile -Force
 
-                $ArgumentList = ("--algo=$Algo $($Parameters.PoolParams) --config=$ThreadsConfigFN $($Parameters.DeviceParams) $($Parameters.Params)" -replace "\s+",' ').Trim()
-                $Job = Start-SubProcess -FilePath $this.Path -ArgumentList $ArgumentList -WorkingDirectory $Miner_Path -LogPath (Join-Path $Miner_Path $LogFile) -Priority ($this.DeviceName | ForEach-Object {if ($_ -like "CPU*") {$this.Priorities.CPU} else {$this.Priorities.GPU}} | Measure-Object -Maximum | Select-Object -ExpandProperty Maximum) -ShowMinerWindow $true -IsWrapper ($this.API -eq "Wrapper") -Executables $this.Executables -SetLDLIBRARYPATH:$this.SetLDLIBRARYPATH
+                $ArgumentListSP = ("--algo=$Algo $($Parameters.PoolParams) --config=$ThreadsConfigFN $($Parameters.DeviceParams) $($Parameters.Params)" -replace "\s+",' ').Trim()
+                $Job = Start-SubProcess -FilePath $this.Path -ArgumentList $ArgumentListSP -WorkingDirectory $Miner_Path -LogPath (Join-Path $Miner_Path $LogFile) -Priority ($this.DeviceName | ForEach-Object {if ($_ -like "CPU*") {$this.Priorities.CPU} else {$this.Priorities.GPU}} | Measure-Object -Maximum | Select-Object -ExpandProperty Maximum) -ShowMinerWindow $true -IsWrapper ($this.API -eq "Wrapper") -Executables $this.Executables -SetLDLIBRARYPATH:$this.SetLDLIBRARYPATH
                 if ($Job.XJob) {
                     $wait = 0
                     While ($wait -lt 60) {
@@ -3445,10 +3947,10 @@ class Xmrig3 : Miner {
 
                         $Aff = if ($Parameters.Affinity) {ConvertFrom-CPUAffinity $Parameters.Affinity}
                         if ($AffCount = ($Aff | Measure-Object).Count) {
-                            $AffThreads = @(Compare-Object $Aff $Parameters.Config.$Device.$Algo -IncludeEqual -ExcludeDifferent | Where-Object {$_.SideIndicator -eq "=="} | Foreach-Object {$_.InputObject} | Select-Object)
+                            $AffThreads = [System.Collections.ArrayList]::new(@(Compare-Object $Aff $Parameters.Config.$Device.$Algo -IncludeEqual -ExcludeDifferent | Where-Object {$_.SideIndicator -eq "=="} | Foreach-Object {$_.InputObject} | Select-Object))
                             $ThreadsCount = [Math]::Min($AffCount,$Parameters.Config.$Device.$Algo.Count)
                             if ($AffThreads.Count -lt $ThreadsCount) {
-                                $Aff | Where-Object {$_ -notin $AffThreads} | Sort-Object {$_ -band 1},{$_} | Select-Object -First ($ThreadsCount-$AffThreads.Count) | Foreach-Object {$AffThreads += $_}
+                                $Aff | Where-Object {$_ -notin $AffThreads} | Sort-Object {$_ -band 1},{$_} | Select-Object -First ($ThreadsCount-$AffThreads.Count) | Foreach-Object {[void]$AffThreads.Add($_)}
                             }
                             $Parameters.Config.$Device.$Algo = @($AffThreads | Sort-Object);
                         }
@@ -3551,8 +4053,8 @@ class Xmrig6 : Miner {
                 $InitConfig = $Parameters.Config | ConvertTo-Json -Depth 10 | ConvertFrom-Json
                 $InitConfig | Add-Member pools $Parameters.Pools -Force -PassThru | ConvertTo-Json -Depth 10 | Set-Content $ThreadsConfigFile -Force
 
-                $ArgumentList = ("--algo=$($Parameters.Algorithm) --config=$ThreadsConfigFN $($Parameters.DeviceParams) $($Parameters.Params)" -replace "\s+",' ').Trim()
-                $Job = Start-SubProcess -FilePath $this.Path -ArgumentList $ArgumentList -WorkingDirectory $Miner_Path -LogPath (Join-Path $Miner_Path $LogFile) -Priority ($this.DeviceName | ForEach-Object {if ($_ -like "CPU*") {$this.Priorities.CPU} else {$this.Priorities.GPU}} | Measure-Object -Maximum | Select-Object -ExpandProperty Maximum) -ShowMinerWindow $true -IsWrapper ($this.API -eq "Wrapper") -MultiProcess $this.MultiProcess -Executables $this.Executables -SetLDLIBRARYPATH:$this.SetLDLIBRARYPATH
+                $ArgumentListSP = ("--algo=$($Parameters.Algorithm) --config=$ThreadsConfigFN $($Parameters.DeviceParams) $($Parameters.Params)" -replace "\s+",' ').Trim()
+                $Job = Start-SubProcess -FilePath $this.Path -ArgumentList $ArgumentListSP -WorkingDirectory $Miner_Path -LogPath (Join-Path $Miner_Path $LogFile) -Priority ($this.DeviceName | ForEach-Object {if ($_ -like "CPU*") {$this.Priorities.CPU} else {$this.Priorities.GPU}} | Measure-Object -Maximum | Select-Object -ExpandProperty Maximum) -ShowMinerWindow $true -IsWrapper ($this.API -eq "Wrapper") -MultiProcess $this.MultiProcess -Executables $this.Executables -SetLDLIBRARYPATH:$this.SetLDLIBRARYPATH
                 if ($Job.XJob) {
                     $WaitProc    = $this.MultiProcess + 1
                     $WaitSeconds = if ($Device -eq "cpu") {30} else {90}
@@ -3602,10 +4104,10 @@ class Xmrig6 : Miner {
 
                         $Aff = if ($Parameters.Affinity) {ConvertFrom-CPUAffinity $Parameters.Affinity}
                         if ($AffCount = ($Aff | Measure-Object).Count) {
-                            $AffThreads = @(Compare-Object $Aff $Parameters.Config.$Device.$Algo -IncludeEqual -ExcludeDifferent | Where-Object {$_.SideIndicator -eq "=="} | Foreach-Object {$_.InputObject} | Select-Object)
+                            $AffThreads = [System.Collections.ArrayList]::new(@(Compare-Object $Aff $Parameters.Config.$Device.$Algo -IncludeEqual -ExcludeDifferent | Where-Object {$_.SideIndicator -eq "=="} | Foreach-Object {$_.InputObject} | Select-Object))
                             $ThreadsCount = [Math]::Min($AffCount,$Parameters.Config.$Device.$Algo.Count)
                             if ($AffThreads.Count -lt $ThreadsCount) {
-                                $Aff | Where-Object {$_ -notin $AffThreads} | Sort-Object {$_ -band 1},{$_} | Select-Object -First ($ThreadsCount-$AffThreads.Count) | Foreach-Object {$AffThreads += $_}
+                                $Aff | Where-Object {$_ -notin $AffThreads} | Sort-Object {$_ -band 1},{$_} | Select-Object -First ($ThreadsCount-$AffThreads.Count) | Foreach-Object {[void]$AffThreads.Add($_)}
                             }
                             $Parameters.Config.$Device.$Algo = @($AffThreads | Sort-Object);
                         }
@@ -3709,7 +4211,7 @@ class XmrigWrapper : Miner {
         if ($MJob.HasMoreData) {
             $HashRate_Name = $this.Algorithm[0]
 
-            $MJob | Receive-Job | ForEach-Object {
+            Read-MinerJobOutput $MJob | ForEach-Object {
                 $Line = $_ -replace "`n|`r", ""
                 $Line_Simple = $Line -replace "\x1B\[[0-?]*[ -/]*[@-~]", ""
                 if ($Line_Simple -match "^.+?(speed|accepted)\s+(.+?)$") {

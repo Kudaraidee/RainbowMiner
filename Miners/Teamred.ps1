@@ -49,7 +49,7 @@ $Commands = [PSCustomObject[]]@(
     [PSCustomObject]@{MainAlgorithm = "ethash";           DAG = $true; MinMemGb = 3;   Params = ""; DevFee = 0.75; ExtendInterval = 3; MainAlgorithmXlat = "ethash4g"; ExcludeCompute = @("GCN1","GCN2")}
     [PSCustomObject]@{MainAlgorithm = "ethash";           DAG = $true; MinMemGb = 4;   Params = ""; DevFee = 0.75; ExtendInterval = 3; MainAlgorithmXlat = "ethash5g"; ExcludeCompute = @("GCN1","GCN2")}
     [PSCustomObject]@{MainAlgorithm = "ethash";           DAG = $true; MinMemGb = 2;   Params = ""; DevFee = 0.75; ExtendInterval = 3; MainAlgorithmXlat = "ethashlowmemory"; ExcludeCompute = @("GCN1","GCN2")}
-    [PSCustomObject]@{MainAlgorithm = "firopow";          DAG = $true; MinMemGb = 3;   Params = ""; DevFee = 2.0;  ExtendInterval = 3; ExcludeCompute = @("GCN1","GCN2","RDNA3")}
+    #[PSCustomObject]@{MainAlgorithm = "firopow";          DAG = $true; MinMemGb = 3;   Params = ""; DevFee = 2.0;  ExtendInterval = 3; ExcludeCompute = @("GCN1","GCN2","RDNA3")}
     [PSCustomObject]@{MainAlgorithm = "fishhash";         DAG = $true; MinMemGb = 2;   Params = ""; DevFee = 2.0;  ExtendInterval = 3; ExcludeCompute = @("GCN1","GCN2","GCN3","GCN4","RDNA3")}
     [PSCustomObject]@{MainAlgorithm = "karlsen";                       MinMemGb = 1.5; Params = ""; DevFee = 1.0;  ExcludeCompute = @("GCN1","GCN2")}
     [PSCustomObject]@{MainAlgorithm = "kas";                           MinMemGb = 1.5; Params = ""; DevFee = 1.0;  MainAlgorithmXlat = "kHeavyHash"; ExcludeCompute = @("GCN1","GCN2")}
@@ -61,7 +61,7 @@ $Commands = [PSCustomObject[]]@(
     [PSCustomObject]@{MainAlgorithm = "lyra2rev3";                     MinMemGb = 1.5; Params = ""; DevFee = 2.5;  ExcludeCompute = @("GCN1","GCN2","RDNA1","RDNA2","RDNA3")}
     [PSCustomObject]@{MainAlgorithm = "lyra2z";                        MinMemGb = 1.5; Params = ""; DevFee = 3.0;  ExcludeCompute = @("GCN1","GCN2","RDNA1","RDNA2","RDNA3")}
     [PSCustomObject]@{MainAlgorithm = "mtp";                           MinMemGb = 5;   Params = ""; DevFee = 2.5;  ExcludeCompute = @("GCN1","GCN2","RDNA3")}
-    [PSCustomObject]@{MainAlgorithm = "nimiq";                         MinMemGb = 1.5; Params = ""; DevFee = 2.5;  ExcludeCompute = @("GCN1","GCN2","RDNA3")}
+    #[PSCustomObject]@{MainAlgorithm = "nimiq";                         MinMemGb = 1.5; Params = ""; DevFee = 2.5;  ExcludeCompute = @("GCN1","GCN2","RDNA3")} #Nimiq is PoS since 11/2024
     [PSCustomObject]@{MainAlgorithm = "phi2";                          MinMemGb = 1.5; Params = ""; DevFee = 3.0;  ExcludeCompute = @("GCN1","GCN2","RDNA1","RDNA2","RDNA3")}
     [PSCustomObject]@{MainAlgorithm = "pyrin";                         MinMemGb = 1.5; Params = ""; DevFee = 1.0;  MainAlgorithmXlat = "HeavyHashPyrin"; ExcludeCompute = @("GCN1","GCN2")}
     [PSCustomObject]@{MainAlgorithm = "ton";                           MinMemGb = 1.5; Params = ""; DevFee = 3.0;  MainAlgorithmXlat = "SHA256ton"; ExtendInterval = 2; ExcludeCompute = @("GCN1","GCN2"); PoolName = "hashrate|toncoinpool|ton-pool|whalestonpool"}
@@ -90,8 +90,8 @@ $Commands = [PSCustomObject[]]@(
     [PSCustomObject]@{MainAlgorithm = "ethash";           DAG = $true; MinMemGb = 2;   Params = ""; DevFee = 0.75; ExtendInterval = 3; SecondAlgorithm = "kas"; SecondAlgorithmXlat = "kHeavyHash"; ExcludeCompute = @("GCN1","GCN2")}
     [PSCustomObject]@{MainAlgorithm = "ethash";           DAG = $true; MinMemGb = 1;   Params = ""; DevFee = 0.75; ExtendInterval = 3; MainAlgorithmXlat = "ethash2g"; SecondAlgorithm = "kas"; SecondAlgorithmXlat = "kHeavyHash"; ExcludeCompute = @("GCN1","GCN2")}
     [PSCustomObject]@{MainAlgorithm = "ethash";           DAG = $true; MinMemGb = 2;   Params = ""; DevFee = 0.75; ExtendInterval = 3; MainAlgorithmXlat = "ethash3g"; SecondAlgorithm = "kas"; SecondAlgorithmXlat = "kHeavyHash"; ExcludeCompute = @("GCN1","GCN2")}
-    [PSCustomObject]@{MainAlgorithm = "ethash";           DAG = $true; MinMemGb = 3;   Params = ""; DevFee = 0.75; ExtendInterval = 3; MainAlgorithmXlat = "ethash3g"; SecondAlgorithm = "kas"; SecondAlgorithmXlat = "kHeavyHash"; ExcludeCompute = @("GCN1","GCN2")}
-    [PSCustomObject]@{MainAlgorithm = "ethash";           DAG = $true; MinMemGb = 4;   Params = ""; DevFee = 0.75; ExtendInterval = 3; MainAlgorithmXlat = "ethash4g"; SecondAlgorithm = "kas"; SecondAlgorithmXlat = "kHeavyHash"; ExcludeCompute = @("GCN1","GCN2")}
+    [PSCustomObject]@{MainAlgorithm = "ethash";           DAG = $true; MinMemGb = 3;   Params = ""; DevFee = 0.75; ExtendInterval = 3; MainAlgorithmXlat = "ethash4g"; SecondAlgorithm = "kas"; SecondAlgorithmXlat = "kHeavyHash"; ExcludeCompute = @("GCN1","GCN2")}
+    [PSCustomObject]@{MainAlgorithm = "ethash";           DAG = $true; MinMemGb = 4;   Params = ""; DevFee = 0.75; ExtendInterval = 3; MainAlgorithmXlat = "ethash5g"; SecondAlgorithm = "kas"; SecondAlgorithmXlat = "kHeavyHash"; ExcludeCompute = @("GCN1","GCN2")}
     [PSCustomObject]@{MainAlgorithm = "ethash";           DAG = $true; MinMemGb = 2;   Params = ""; DevFee = 0.75; ExtendInterval = 3; MainAlgorithmXlat = "ethashlowmemory"; SecondAlgorithm = "kas"; SecondAlgorithmXlat = "kHeavyHash"; ExcludeCompute = @("GCN1","GCN2")}
 
     #[PSCustomObject]@{MainAlgorithm = "ethash";           DAG = $true; MinMemGb = 2;   Params = ""; DevFee = 0.75; ExtendInterval = 3; SecondAlgorithm = "ton"; SecondPoolName = "hashrate|toncoinpool|ton-pool|whalestonpool"}
@@ -136,7 +136,7 @@ $Global:DeviceCache.DevicesByTypes.AMD | Select-Object Vendor, Model -Unique | F
         $Miner_ExcludeCompute = $_.ExcludeCompute
         $Miner_Compute = $_.Compute
 
-		foreach($MainAlgorithm_Norm in @($MainAlgorithm_Norm_0,"$($MainAlgorithm_Norm_0)-$($Miner_Model)","$($MainAlgorithm_Norm_0)-GPU")) {
+		foreach($MainAlgorithm_Norm in @(Get-PoolAlgorithmKeys -Pools $Pools -Algorithm $MainAlgorithm_Norm_0 -Model $Miner_Model -ExcludePoolName "$($_.ExcludePoolName)" -PoolName "$($_.PoolName)")) {
             if (-not $Pools.$MainAlgorithm_Norm.Host) {continue}
 
             $MinMemGB = if ($_.DAG) {if ($Pools.$MainAlgorithm_Norm.DagSizeMax) {$Pools.$MainAlgorithm_Norm.DagSizeMax} else {Get-EthDAGSize -CoinSymbol $Pools.$MainAlgorithm_Norm.CoinSymbol -Algorithm $MainAlgorithm_Norm_0 -Minimum $_.MinMemGb}} else {$_.MinMemGb}

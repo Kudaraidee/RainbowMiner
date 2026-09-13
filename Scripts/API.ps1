@@ -1,6 +1,4 @@
-﻿using module .\Modules\MinerAPIs.psm1
-
-param([int]$ThreadID,$APIHttpListener,$CurrentPwd)
+﻿param([int]$ThreadID,$APIHttpListener,$CurrentPwd)
 
 Set-Location $CurrentPwd
 
@@ -12,8 +10,16 @@ $BasePath = Join-Path $PWD "web"
 
 Set-OsFlags
 
+function ConvertFrom-APIJson {
+    param($Data)
+    # the Core stores the API payloads as UTF-8 byte arrays (RBMToolBox writer)
+    if ($Data -is [byte[]]) {$Data = [System.Text.Encoding]::UTF8.GetString($Data)}
+    if ($Data) {ConvertFrom-Json $Data -ErrorAction Ignore}
+}
+
 $GCStopWatch = [System.Diagnostics.StopWatch]::New()
 $GCStopWatch.Start()
+$GCRuns = 0
 
 $EnableFixBigInt = (Get-Command "Invoke-GetUrlAsync").parameters.fixbigint -ne $null
 
@@ -52,17 +58,19 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
     $ContentType     = "application/json"
     $StatusCode      = [System.Net.HttpStatusCode]::OK
     $ContentFileName = ""
+    $CacheControl    = $null
+    $LastModified    = $null
 
     if ($Path -match $API.RandTag) {$Path = "/stop";$API.APIauth = $false}
 
     $IsAuth = $true
 
-    $RemoteIP   = "$($Request.RemoteEndPoint)" -replace ":\d+$" -replace "^\[.+\]$"
+    $RemoteIP   = "$($Request.RemoteEndPoint)" -replace ":\d+$" -replace "^\[(.+)\]$", '$1'
     $RemoteAuth = $API.RemoteAPI -and $API.APIauth
     
     if ($RemoteAuth -or $API.AllowIPs) {
     
-        $IsAuth = (-not $RemoteAuth -or ($Context.User.Identity.IsAuthenticated -and $Context.User.Identity.Name -eq $API.APIuser -and $Context.User.Identity.Password -eq $API.APIpassword)) -and (-not $API.AllowIPs -or $RemoteIP -eq "" -or ($API.AllowIPs | Where-Object {$RemoteIP -like $_} | Measure-Object).Count)
+        $IsAuth = (-not $RemoteAuth -or ($Context.User.Identity.IsAuthenticated -and $Context.User.Identity.Name -eq $API.APIuser -and $Context.User.Identity.Password -eq $API.APIpassword)) -and (-not $API.AllowIPs -or $RemoteIP -eq "" -or ($API.AllowIPs | Where-Object { Test-IPInRange -IP $RemoteIP -Pattern $_ } | Measure-Object).Count)
 
         if ($API.MaxLoginAttempts -gt 0 -and $RemoteIP -ne "") {
 
@@ -132,7 +140,7 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
 
             $CurrentMiners = @()
             if (($IsLinux -or -not $Session.Config.ShowMinerWindow) -and $API.RunningMiners) {
-                $RunningMiners = ConvertFrom-Json $API.RunningMiners -ErrorAction Ignore
+                $RunningMiners = ConvertFrom-APIJson $API.RunningMiners
                 $CurrentMiners = @($RunningMiners | Where-Object {$_.LogFile -and (Test-Path $_.LogFile)} | Sort-Object -Property Name | Foreach-Object {
                     [PSCustomObject]@{
                         Name = "$($_.DeviceModel) $($_.BaseName)"
@@ -271,7 +279,7 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
             $WTMdata_algos = @($WTMdata | Where-Object {$_.id} | Foreach-Object {if ($_.algo -eq "ProgPow") {"ProgPowZ","ProgPowSero"} else {$_.algo}} | Select-Object)
             $WTMdata_result = [hashtable]@{}
             if ($API.FastestMiners) {
-                $API_FastestMiners = ConvertFrom-Json $API.FastestMiners -ErrorAction Ignore
+                $API_FastestMiners = ConvertFrom-APIJson $API.FastestMiners
                 $API_FastestMiners | Where-Object {$_.BaseAlgorithm -notmatch '-' -and $WTMdata_algos -icontains $_.BaseAlgorithm} | Group-Object -Property DeviceModel | Foreach-Object {
                     $Group = $_.Group
                     $WTMdata_result[$_.Name] = "https://whattomine.com/coins?$(@($WTMdata | Where-Object {$_.id} | Foreach-Object {$Algo = @(if ($_.algo -eq "ProgPow") {"ProgPowZ","ProgPowSero"} else {$_.algo});if (($One = $Group | Where-Object {$_.BaseAlgorithm -in $Algo} | Select-Object -First 1) -and (($OneHR = if ($One.HashRates."$($One.BaseAlgorithm)") {$One.HashRates."$($One.BaseAlgorithm)"} elseif ($One.HashRates."$($One.BaseAlgorithm)-$($One.DeviceModel)") {$One.HashRates."$($One.BaseAlgorithm)-$($One.DeviceModel)"} else {$One.HashRates."$($One.BaseAlgorithm)-GPU"}) -gt 0)) {"$($_.id)=true&factor[$($_.id)_hr]=$([Math]::Round($OneHR/$_.factor,3))&factor[$($_.id)_p]=$([int]$One.PowerDraw)"} else {"$($_.id)=false&factor[$($_.id)_hr]=$(if ($_.id -eq "eth") {"0.000001"} else {"0"})&factor[$($_.id)_p]=0"}}) -join '&')&factor[cost]=$(if ($Session.Config.UsePowerPrice) {[Math]::Round($API.CurrentPowerPrice*$(if ($Session.Config.PowerPriceCurrency -ne "USD" -and $Rates."$($Session.Config.PowerPriceCurrency)") {$Rates.USD/$Rates."$($Session.Config.PowerPriceCurrency)"} else {1}),4)} else {0})&sort=Profitability24&volume=0&revenue=24h&dataset=$($Session.Config.WorkerName)&commit=Calculate"
@@ -674,65 +682,111 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
             #create zip log and xxx out all purses
             $DebugDate     = Get-Date -Format "yyyy-MM-dd"
             $DebugPath     = Join-Path (Resolve-Path ".\Logs") "debug-$DebugDate"
-            $PurgeStrings  = @()
+
+            $PurgeStrings  = [System.Collections.Generic.List[string]]::new()
+            # identity values (host/user names) are short and word-like: they may only
+            # match as whole tokens, or they corrupt other words (SrbMinerMulti!)
+            $PurgeStringsBounded = [System.Collections.Generic.List[string]]::new()
+            # route each secret by shape: short pure-word values are identity-like
+            # (account/worker names, simple passwords) and go into the bounded list
+            $AddPurgeString = {
+                param($Value)
+                if ($Value -match "^\w{1,15}$") {[void]$PurgeStringsBounded.Add($Value)} else {[void]$PurgeStrings.Add($Value)}
+            }
             $UserConfig    = if ($Session.UserConfig) {$Session.UserConfig | ConvertTo-Json -Depth 10 -ErrorAction Ignore | ConvertFrom-Json -ErrorAction Ignore} else {$null}
             $RunningConfig = $Session.Config | ConvertTo-Json -Depth 10 -ErrorAction Ignore | ConvertFrom-Json -ErrorAction Ignore
             @($RunningConfig,$UserConfig) | Where-Object {$_} | Foreach-Object {
                 $CurrentConfig = $_
-                @("Wallet","API_Key","MinerStatusKey","MinerStatusEmail","PushOverUserKey") | Where-Object {$CurrentConfig.$_} | Foreach-Object {$PurgeStrings += $CurrentConfig.$_}
+                @("Wallet","API_Key","MinerStatusKey","MinerStatusEmail","PushOverUserKey") | Where-Object {$CurrentConfig.$_} | Foreach-Object {& $AddPurgeString ([string]$CurrentConfig.$_)}
+                @("ServerName","ServerUser","APIuser") | Where-Object {$CurrentConfig.$_ -and "$($CurrentConfig.$_)" -notmatch "^\`$"} | Foreach-Object {[void]$PurgeStringsBounded.Add($CurrentConfig.$_);$CurrentConfig.$_ = "XXX"}
                 @("Username","APIPassword","ServerPassword") | Where-Object {$CurrentConfig.$_} | Foreach-Object {$CurrentConfig.$_ = "XXX"}
                 $CurrentConfig.Pools.PSObject.Properties.Value | Foreach-Object {
                     $CurrentPool = $_
-                    $PurgeStrings += @($CurrentPool.Wallets.PSObject.Properties.Value | Where-Object {$_} | Select-Object)
-                    @("Wallet","API_Key","API_Secret","OrganizationID","Password","PartyPassword","Email") | Where-Object {$CurrentPool.$_ -and $CurrentPool.$_.Length -gt 5} | Foreach-Object {$PurgeStrings += $CurrentPool.$_}
+                    $CurrentPool.Wallets.PSObject.Properties.Value | Where-Object {$_ -and "$_" -notmatch "^\`$"} | Foreach-Object {& $AddPurgeString ([string]$_)}
+                    @("Wallet","API_Key","API_Secret","OrganizationID","Password","PartyPassword","Email") | Where-Object {$CurrentPool.$_ -and $CurrentPool.$_.Length -gt 5} | Foreach-Object {& $AddPurgeString ([string]$CurrentPool.$_)}
+                    @("User","Username") | Where-Object {$CurrentPool.$_ -and $CurrentPool.$_.Length -gt 5 -and "$($CurrentPool.$_)" -notmatch "^\`$"} | Foreach-Object {[void]$PurgeStringsBounded.Add([string]$CurrentPool.$_)}
                     @("Username") | Where-Object {$CurrentPool.$_} | Foreach-Object {$CurrentPool.$_ = "XXX"}
+                }
+                $CurrentConfig.Coins.PSObject.Properties.Value | Where-Object {$_.Wallet -and $_.Wallet.Length -gt 5} | Foreach-Object {& $AddPurgeString ([string]$_.Wallet)}
+                $CurrentConfig.Userpools | Where-Object {$_} | Foreach-Object {
+                    if ($_.Wallet -and $_.Wallet.Length -gt 5) {& $AddPurgeString ([string]$_.Wallet)}
+                    if ($_.User -and $_.User.Length -gt 5 -and "$($_.User)" -notmatch "^\`$") {[void]$PurgeStringsBounded.Add([string]$_.User)}
                 }
             }
 
-            $PurgeStrings = @($PurgeStrings | Select-Object -Unique | Where-Object {$_ -and $_.Length -gt 2} | Foreach-Object {[regex]::Escape($_)} | Sort-Object -Property {$_.Length})
+            # a single alternation, longest strings first: the regex engine prefers the
+            # first-listed alternative per position, so substrings need no dedup pass
+            $PurgeRegex = @(
+                @($PurgeStrings | Where-Object {$_ -and $_.Length -gt 2} | Select-Object -Unique | Sort-Object -Property {$_.Length} -Descending | Foreach-Object {[regex]::Escape($_)}) +
+                @($PurgeStringsBounded | Where-Object {$_ -and $_.Length -gt 2} | Select-Object -Unique | Sort-Object -Property {$_.Length} -Descending | Foreach-Object {"(?<!\w)$([regex]::Escape($_))(?!\w)"})
+            ) -join "|"
 
-            $PurgeStringsUnique = [System.Collections.ArrayList]@()
+            # keep version numbers readable: first tag v-prefix/Version*-label (plain
+            # or JSON)/Unix/Windows version numbers with a sentinel char, then mask
+            # the remaining IPv4s (valid octets, no loopback, not in a table column =
+            # word + 2+ blanks), then strip the sentinel. -replace operator only: it
+            # is much faster here than [regex]::Replace or MatchEvaluator callbacks,
+            # and the protect alternation must start with rare characters (v/u/w) to
+            # keep the engine's prefix scan
+            $ip_protect = '((?:v|version\w{0,30}"?[:=]\s{0,4}"?|unix\s{1,4}|windows\s{1,4})\d)(?=\d{0,2}(?:\.\d{1,3}){3}(?![\w.]))'
+            $ip_regex   = '\b(?<!\.)(?<!\w[ \t]{2,40})(?!127\.)(?!0\.0\.0\.0(?![\w.]))(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}\b(?!\.)'
+            $ip_mark    = [string][char]1
 
-            While ($PurgeStrings) {
-                $PurgeUnique = @()
-                for ($i=0;$i -lt $PurgeStrings.Count;$i++) {
-                    if (-not (@($PurgeStrings | Select-Object -Skip ($i+1)) -match $PurgeStrings[$i])) {
-                        $PurgeUnique += $PurgeStrings[$i]
-                    }
-                }
-                if ($PurgeUnique.Count) {
-                    [void]$PurgeStringsUnique.Add(@($PurgeUnique))
-                    $PurgeStrings = @(Compare-Object $PurgeStrings $PurgeUnique | Where-Object SideIndicator -eq "<=" | Foreach-Object {$_.InputObject} | Select-Object)
-                } else {
-                    [void]$PurgeStringsUnique.Add(@($PurgeStrings))
-                    $PurgeStrings = $null
-                }
+            # the project's own public tokens must survive the purge: a config value
+            # equal to one of them (account name, pool password) would otherwise
+            # corrupt every mention of RainbowMiner.ps1, api.rbminer.net or the
+            # SRBMiner binaries - the sentinel breaks the purge match and is
+            # stripped together with the ip_protect marks at the end
+            $pub_protect = '((?:rainbow|srb|rb)m)(?=iner)'
+
+            # the "Server host:port" rule must not hit "--server <pool>:<port>" miner
+            # arguments - pools are public and needed for diagnosis
+            $MaskDebugText = {
+                param($Text)
+                $Text = $Text -replace $pub_protect,"`$1$ip_mark"
+                if ($PurgeRegex) {$Text = $Text -replace "($PurgeRegex)","XXX"}
+                $Text = $Text -replace "onnected to [^\s]+:\d+","onnected to XXX:NNN" -replace "(?<![\w-])Server [^\s]+:\d+","Server XXX:NNN" -replace "(?<![\w-])Port=\d+","Port=NNN" -replace "(?!127\.0\.0\.1\b)(\d+\.){3}\d+:\d+","X.X.X.X:NNN"
+                $Text = $Text -replace $ip_protect,"`$1$ip_mark" -replace $ip_regex,"X.X.X.X"
+                $Text.Replace($ip_mark,"") -replace "([0-9a-f]+:){7}[0-9a-f]+","X:X:X:X:X:X:X:X"
             }
 
             if (-not (Test-Path $DebugPath)) {New-Item $DebugPath -ItemType "directory" > $null}
             @(Get-ChildItem ".\Logs\*$(Get-Date -Format "yyyy-MM-dd")*.txt" | Select-Object) + @(Get-ChildItem ".\Logs\*$((Get-Date).AddDays(-1).ToString('yyyy-MM-dd'))*.txt" | Select-Object) | Sort-Object LastWriteTime | Foreach-Object {
                 $LastWriteTime = $_.LastWriteTime
                 $NewFile = "$DebugPath\$($_.Name)"
-                $PurgeString = Get-ContentByStreamReader $_
-                $PurgeStringsUnique.Where({$_ -and $_.Count}).Foreach({$PurgeString = $PurgeString -replace "($($_ -join "|"))","XXX"})
-                $ip_regex = '\b(?!4\.)\d{1,3}(?:\.\d{1,3}){3}\b'
-                $PurgeString = $PurgeString -replace "onnected to [^\s]+:\d+","onnected to XXX:NNN"  -replace "Server [^\s]+:\d+","Server XXX:NNN" -replace "Port=\d+","Port=NNN" -replace "(\d+\.){3}\d+:\d+","X.X.X.X:NNN" -replace $ip_regex,"X.X.X.X" -replace "([0-9a-f]+:){7}[0-9a-f]+","X:X:X:X:X:X:X:X"
+                $PurgeString = & $MaskDebugText (Get-ContentByStreamReader $_)
+                Out-File -InputObject $PurgeString -FilePath $NewFile
+                Get-ChildItem $NewFile | Foreach-Object {$_.LastWriteTime = $_.CreationTime = $_.LastAccessTime = $LastWriteTime}
+            }
+
+            # last round's per-module timing snapshots (timerselect/timerpools/timerminers.json)
+            @(Get-ChildItem ".\Logs\timer*.json" -ErrorAction Ignore | Select-Object) | Foreach-Object {
+                $LastWriteTime = $_.LastWriteTime
+                $NewFile = "$DebugPath\$($_.Name)"
+                $PurgeString = & $MaskDebugText (Get-ContentByStreamReader $_)
                 Out-File -InputObject $PurgeString -FilePath $NewFile
                 Get-ChildItem $NewFile | Foreach-Object {$_.LastWriteTime = $_.CreationTime = $_.LastAccessTime = $LastWriteTime}
             }
 
             if ($Session.Config) {
                 $NewFile = "$DebugPath\config.json"
-                $PurgeString = $RunningConfig | ConvertTo-Json -Depth 10
-                $PurgeStringsUnique.Where({$_ -and $_.Count}).Foreach({$PurgeString = $PurgeString -replace "($($_ -join "|"))","XXX"})
-                Out-File -InputObject $PurgeString -FilePath $NewFile
+                Out-File -InputObject (& $MaskDebugText ($RunningConfig | ConvertTo-Json -Depth 10)) -FilePath $NewFile
             }
 
             if ($Session.UserConfig) {
                 $NewFile = "$DebugPath\userconfig.json"
-                $PurgeString = $UserConfig | ConvertTo-Json -Depth 10
-                $PurgeStringsUnique.Where({$_ -and $_.Count}).Foreach({$PurgeString = $PurgeString -replace "($($_ -join "|"))","XXX"})
+                Out-File -InputObject (& $MaskDebugText ($UserConfig | ConvertTo-Json -Depth 10)) -FilePath $NewFile
+            }
+
+            # generated miner start scripts (Linux screen/tmux only) - the essential
+            # artifact to diagnose miner start failures; they carry the full argument
+            # list incl. wallets, so they run through the same masking
+            @(Get-ChildItem ".\Data\pid\*.sh" -ErrorAction Ignore | Select-Object) + @(Get-ChildItem ".\Bin\*\*.sh" -ErrorAction Ignore | Select-Object) | Where-Object {$_.LastWriteTime -gt (Get-Date).AddDays(-2)} | Foreach-Object {
+                $LastWriteTime = $_.LastWriteTime
+                $NewFile = "$DebugPath\startsh_$($_.Directory.Name)_$($_.Name)"
+                $PurgeString = & $MaskDebugText (Get-ContentByStreamReader $_)
                 Out-File -InputObject $PurgeString -FilePath $NewFile
+                Get-ChildItem $NewFile | Foreach-Object {$_.LastWriteTime = $_.CreationTime = $_.LastAccessTime = $LastWriteTime}
             }
 
             $TestFileName = ".\Data\gpu-test.txt"
@@ -759,7 +813,7 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
                             '--query-gpu=gpu_name,utilization.gpu,utilization.memory,temperature.gpu,power.draw,power.limit,fan.speed,pstate,clocks.current.graphics,clocks.current.memory,power.max_limit,power.default_limit'
                             '--format=csv,noheader'
                         )
-                        Invoke-Exe "nvidia-smi" -ArgumentList ($Arguments -join ' ') -WorkingDirectory $Pwd -ExpandLines -ExcludeEmptyLines | Out-File $TestFileName -Encoding utf8 -Append
+                        Invoke-Exe "nvidia-smi" -ArgumentList ($Arguments -join ' ') -WorkingDirectory $Pwd -ExpandLines -ExcludeEmptyLines -WaitForExit 15 -KillOnTimeout | Out-File $TestFileName -Encoding utf8 -Append
                     } catch {
                     }
 
@@ -784,7 +838,7 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
                         "[OdVII 8]" | Out-File $TestFileName -Append -Encoding utf8
                         "-"*80 | Out-File $TestFileName -Append -Encoding utf8
                         " " | Out-File $TestFileName -Append -Encoding utf8
-                        Invoke-Exe ".\Includes\odvii_$(if ([System.Environment]::Is64BitOperatingSystem) {"x64"} else {"x86"}).exe" -WorkingDirectory $Pwd -ExpandLines -ExcludeEmptyLines  | Out-File $TestFileName -Encoding utf8 -Append
+                        Invoke-Exe ".\Includes\odvii_$(if ([System.Environment]::Is64BitOperatingSystem) {"x64"} else {"x86"}).exe" -WorkingDirectory $Pwd -ExpandLines -ExcludeEmptyLines -WaitForExit 15 -KillOnTimeout -NoCrashDialog | Out-File $TestFileName -Encoding utf8 -Append
                     } catch {
                     }
 
@@ -801,7 +855,7 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
                             '--query-gpu=gpu_name,utilization.gpu,utilization.memory,temperature.gpu,power.draw,power.limit,fan.speed,pstate,clocks.current.graphics,clocks.current.memory,power.max_limit,power.default_limit'
                             '--format=csv,noheader'
                         )
-                        Invoke-Exe ".\Includes\nvidia-smi.exe" -ArgumentList ($Arguments -join ' ') -WorkingDirectory $Pwd -ExpandLines -ExcludeEmptyLines | Out-File $TestFileName -Encoding utf8 -Append
+                        Invoke-Exe ".\Includes\nvidia-smi.exe" -ArgumentList ($Arguments -join ' ') -WorkingDirectory $Pwd -ExpandLines -ExcludeEmptyLines -WaitForExit 15 -KillOnTimeout -NoCrashDialog | Out-File $TestFileName -Encoding utf8 -Append
                     } catch {
                     }
 
@@ -825,9 +879,21 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
                         "-"*80 | Out-File $TestFileName -Append -Encoding utf8
                         " " | Out-File $TestFileName -Append -Encoding utf8
                         if ($_.ListPlatforms) {
-                            Invoke-Exe $_.Path -ArgumentList $_.ListPlatforms -WorkingDirectory $Pwd -ExpandLines | Out-File $TestFileName -Encoding utf8 -Append
+                            $Global:LASTEXEEXITCODE = 0
+                            Invoke-Exe $_.Path -ArgumentList $_.ListPlatforms -WorkingDirectory $Pwd -ExpandLines -WaitForExit 15 -KillOnTimeout -NoCrashDialog | Out-File $TestFileName -Encoding utf8 -Append
+                            if ($Global:LASTEXEEXITCODE) {
+                                $ExeExit = if ($Global:LASTEXEEXITCODE -eq -1) {"timeout/killed"} else {"0x{0:X8}" -f $Global:LASTEXEEXITCODE}
+                                "** $($_.BaseName) $($_.ListPlatforms) exited with code $ExeExit" | Out-File $TestFileName -Encoding utf8 -Append
+                                Write-Log -Level Warn "Debug device listing: $($_.BaseName) $($_.ListPlatforms) exited with code $ExeExit"
+                            }
                         }
-                        Invoke-Exe $_.Path -ArgumentList $_.ListDevices -WorkingDirectory $Pwd -ExpandLines | Out-File $TestFileName -Encoding utf8 -Append
+                        $Global:LASTEXEEXITCODE = 0
+                        Invoke-Exe $_.Path -ArgumentList $_.ListDevices -WorkingDirectory $Pwd -ExpandLines -WaitForExit 15 -KillOnTimeout -NoCrashDialog | Out-File $TestFileName -Encoding utf8 -Append
+                        if ($Global:LASTEXEEXITCODE) {
+                            $ExeExit = if ($Global:LASTEXEEXITCODE -eq -1) {"timeout/killed"} else {"0x{0:X8}" -f $Global:LASTEXEEXITCODE}
+                            "** $($_.BaseName) $($_.ListDevices) exited with code $ExeExit" | Out-File $TestFileName -Encoding utf8 -Append
+                            Write-Log -Level Warn "Debug device listing: $($_.BaseName) $($_.ListDevices) exited with code $ExeExit"
+                        }
                     } catch {
                     }
                 }
@@ -861,12 +927,12 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
 
             Remove-Item "$($DebugPath).zip" -Force -ErrorAction Ignore
 
-            $API_Miners = $Arguments = $CurrentConfig = $CurrentPool = $DebugDate = $DebugPath = $ip_regex = $LastWriteTime = $NewFile = $Params = $PurgeString = $PurgeStrings = $PurgeStringsUnique = $PurgeUnique = $RunningConfig = $TestFileName = $UserConfig = $null
-            Remove-Variable -Name API_Miners, Arguments, CurrentConfig, CurrentPool, DebugDate, DebugPath, ip_regex, LastWriteTime, NewFile, Params, PurgeString, PurgeStrings, PurgeStringsUnique, PurgeUnique, RunningConfig, TestFileName, UserConfig -ErrorAction Ignore
+            $AddPurgeString = $API_Miners = $Arguments = $CurrentConfig = $CurrentPool = $DebugDate = $DebugPath = $ExeExit = $ip_mark = $ip_protect = $ip_regex = $LastWriteTime = $MaskDebugText = $NewFile = $Params = $pub_protect = $PurgeRegex = $PurgeString = $PurgeStrings = $PurgeStringsBounded = $RunningConfig = $TestFileName = $UserConfig = $null
+            Remove-Variable -Name AddPurgeString, API_Miners, Arguments, CurrentConfig, CurrentPool, DebugDate, DebugPath, ExeExit, ip_mark, ip_protect, ip_regex, LastWriteTime, MaskDebugText, NewFile, Params, pub_protect, PurgeRegex, PurgeString, PurgeStrings, PurgeStringsBounded, RunningConfig, TestFileName, UserConfig -ErrorAction Ignore
             Break
         }
         "/setup.json" {
-            $Data = ConvertTo-Json ([PSCustomObject]@{Autostart=[PSCustomObject]@{Enable="0";ConfigName="All";DeviceName="GPU";WorkerName=""};Exclude=$Session.Config.ExcludeServerConfigVars;Config=(Get-ConfigContent "config");Pools=(Get-ConfigContent "pools");Coins=(Get-ConfigContent "coins");OCProfiles=(Get-ConfigContent "ocprofiles");Scheduler=(Get-ConfigContent "scheduler");Userpools=(Get-ConfigContent "userpools")}) -Depth 10
+            $Data = ConvertTo-Json ([PSCustomObject]@{Autostart=[PSCustomObject]@{Enable="0";ConfigName="All";DeviceName="GPU";WorkerName=""};Exclude=$Session.Config.ExcludeServerConfigVars;Config=(Get-ConfigContent "config");Pools=(Get-ConfigContent "pools");Coins=(Get-ConfigContent "coins");OCProfiles=(Get-ConfigContent "ocprofiles");Scheduler=(Get-ConfigContent "scheduler");Userpools=(Get-ConfigContent "userpools");CustomMiners=(Get-ConfigContent "customminers")}) -Depth 10
             $ContentFileName = "setup.json"
             Break
         }
@@ -1063,6 +1129,10 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
         }
         "/watchdogtimers" {
             $Data = if ($API.WatchdogTimers) {ConvertTo-Json $API.WatchdogTimers -Depth 2 -WarningAction Ignore} else {"[]"}
+            Break
+        }
+        "/memoryskipped" {
+            $Data = if ($API.MemorySkipped) {$API.MemorySkipped} else {"[]"}
             Break
         }
         "/crashcounter" {
@@ -1455,6 +1525,11 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
             $Data = $API.WatchdogReset | ConvertTo-Json
             Break
         }
+        "/clearcache" {
+            $API.ClearCache = $true
+            $Data = $API.ClearCache | ConvertTo-Json
+            Break
+        }
         "/status" {
             $Data = [PSCustomObject]@{Pause=$API.PauseMiners.Pause;PauseIAOnly=$API.PauseMiners.PauseIAOnly;LockMiners=$Session.LockMiners;IsExclusiveRun=$Session.IsExclusiveRun;IsDonationRun=$Session.IsDonationRun} | ConvertTo-Json -Depth 10
             Break
@@ -1462,9 +1537,9 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
         "/clients" {
             $Config = if ($Session.UserConfig) {$Session.UserConfig} else {$Session.Config}
             if ($Parameters.include_server -eq "true" -and $Config.RunMode -eq "Server") {
-                $Data = @($APIClients) + @([PSCustomObject]@{workername = $Config.Workername; machinename = $Session.MachineName; machineip = $Session.MyIP; port = $Config.APIPort; timestamp = Get-UnixTimestamp; isserver=$true}) | ConvertTo-Json
+                $Data = @($APIClients.ToArray()) + @([PSCustomObject]@{workername = $Config.Workername; machinename = $Session.MachineName; machineip = $Session.MyIP; port = $Config.APIPort; timestamp = Get-UnixTimestamp; isserver=$true}) | ConvertTo-Json
             } else {
-                $Data = ConvertTo-Json $APIClients
+                $Data = ConvertTo-Json @($APIClients.ToArray())
             }
             $Config = $null
             Remove-Variable -Name Config -ErrorAction Ignore
@@ -1518,7 +1593,7 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
             $Status = $false
             if ($API.IsServer) {
                 if ($Parameters.workername -and $Parameters.machinename) {
-                    $Client = $APIClients | Where-Object {$_.workername -eq $Parameters.workername -and $_.machinename -eq $Parameters.machinename}
+                    $Client = $APIClients.ToArray() | Where-Object {$_.workername -eq $Parameters.workername -and $_.machinename -eq $Parameters.machinename}
                     if ($Client) {
                         $Client.machineip = $Parameters.myip
                         $Client.port      = $Parameters.port 
@@ -1556,7 +1631,7 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
             if ($API.IsServer) {
                 $Status = $false
                 if ($Parameters.workername -and $Parameters.machinename) {
-                    $Client = $APIClients | Where-Object {$_.workername -eq $Parameters.workername -and $_.machinename -eq $Parameters.machinename}
+                    $Client = $APIClients.ToArray() | Where-Object {$_.workername -eq $Parameters.workername -and $_.machinename -eq $Parameters.machinename}
                     if ($Client) {
                         $Client.machineip = $Parameters.myip
                         $Client.port      = $Parameters.port; 
@@ -1566,6 +1641,9 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
                 }
                 $Result = $null
                 try {
+                    # reject invalid target urls up front - an empty or relative url would create a
+                    # poisoned job in this server's asyncloader that fails on every cycle (issue #3052)
+                    if ("$($Parameters.url)" -notmatch "^https?://") {throw "invalid url `"$($Parameters.url)`" received"}
                     $pbody = $null
                     if ($Parameters.body -match "^{.+}$") {
                         $pbody_in = $Parameters.body | ConvertFrom-Json -ErrorAction Ignore
@@ -1573,6 +1651,13 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
 
                         $pbody_in = $null
                         Remove-Variable -Name pbody_in -ErrorAction Ignore
+                    } elseif ($Parameters.body -match '^".*"$') {
+                        # the client serializes the body with ConvertTo-Json, so a string body (a
+                        # JSON-RPC payload such as the ZIL wallet balance) arrives as a quoted JSON
+                        # string. Decoding it once gives the raw string back; dropping it made the
+                        # job a bare GET and, through the shared jobkey, also stripped the body from
+                        # this server's own copy of the job
+                        $pbody = $Parameters.body | ConvertFrom-Json -ErrorAction Ignore
                     }
                     $pheaders = $null
                     if ($Parameters.headers -match "^{.+}$") {
@@ -1586,8 +1671,8 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
                         try {
                             $RatesUri = [System.Uri]$Parameters.url
                             $RatesQry = [System.Web.HttpUtility]::ParseQueryString($RatesUri.Query)
-                            Compare-Object $Session.GetTicker @([System.Web.HttpUtility]::UrlDecode($RatesQry["symbols"]) -split ',' | Select-Object) | Where-Object {$_.SideIndicator -eq "=>" -and $_.InputObject} | Foreach-Object {[void]$Session.GetTicker.Add($_.InputObject.ToUpper())}
-                            $SymbolStr = "$(($Session.GetTicker | Sort-Object) -join ',')".ToUpper()
+                            Compare-Object $Session.GetTicker.ToArray() @([System.Web.HttpUtility]::UrlDecode($RatesQry["symbols"]) -split ',' | Select-Object) | Where-Object {$_.SideIndicator -eq "=>" -and $_.InputObject} | Foreach-Object {[void]$Session.GetTicker.Add($_.InputObject.ToUpper())}
+                            $SymbolStr = "$(($Session.GetTicker.ToArray() | Sort-Object) -join ',')".ToUpper()
                             $Parameters.url = "https://api.rbminer.net/cmc.php?symbols=$($SymbolStr)"
 
                             $RatesUri = $RatesQry = $SymbolStr = $null
@@ -1612,7 +1697,7 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
             if ($API.IsServer) {
                 $Status = $false
                 if ($Parameters.workername -and $Parameters.machinename) {
-                    $Client = $APIClients | Where-Object {$_.workername -eq $Parameters.workername -and $_.machinename -eq $Parameters.machinename}
+                    $Client = $APIClients.ToArray() | Where-Object {$_.workername -eq $Parameters.workername -and $_.machinename -eq $Parameters.machinename}
                     if ($Client) {
                         $Client.machineip = $Parameters.myip
                         $Client.port      = $Parameters.port; 
@@ -1666,7 +1751,7 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
             if ($API.IsServer) {
                 $Status = $false
                 if ($Parameters.workername -and $Parameters.machinename) {
-                    $Client = $APIClients | Where-Object {$_.workername -eq $Parameters.workername -and $_.machinename -eq $Parameters.machinename}
+                    $Client = $APIClients.ToArray() | Where-Object {$_.workername -eq $Parameters.workername -and $_.machinename -eq $Parameters.machinename}
                     if ($Client) {
                         $Client.machineip = $Parameters.myip
                         $Client.port      = $Parameters.port
@@ -1698,7 +1783,7 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
             if ($API.IsServer) {
                 $Status = $false
                 if ($Parameters.workername -and $Parameters.machinename) {
-                    $Client = $APIClients | Where-Object {$_.workername -eq $Parameters.workername -and $_.machinename -eq $Parameters.machinename}
+                    $Client = $APIClients.ToArray() | Where-Object {$_.workername -eq $Parameters.workername -and $_.machinename -eq $Parameters.machinename}
                     if ($Client) {
                         $Client.machineip = $Parameters.myip
                         $Client.port      = $Parameters.port
@@ -1727,6 +1812,38 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
             }
             break
         }
+        "/getunmineable" {
+            if ($API.IsServer) {
+                $Status = $false
+                if ($Parameters.workername -and $Parameters.machinename) {
+                    $Client = $APIClients.ToArray() | Where-Object {$_.workername -eq $Parameters.workername -and $_.machinename -eq $Parameters.machinename}
+                    if ($Client) {
+                        $Client.machineip = $Parameters.myip
+                        $Client.port      = $Parameters.port
+                        $Client.timestamp = Get-UnixTimestamp
+                    }
+                    else {[void]$APIClients.Add([PSCustomObject]@{workername = $Parameters.workername; machinename = $Parameters.machinename; machineip = $Parameters.myip; port = $Parameters.port; timestamp = Get-UnixTimestamp})}
+                }
+                $Result = $null
+                try {
+                    if (-not $Parameters.key -and $Session.Config.Pools.unMineable.API_Key  -and $Session.Config.Pools.unMineable.API_Secret) {
+                        $Parameters | Add-Member key    $Session.Config.Pools.unMineable.API_Key -Force
+                        $Parameters | Add-Member secret $Session.Config.Pools.unMineable.API_Secret -Force
+                    }
+                    if ($Parameters.key -and $Parameters.secret) {
+                        $Params = [hashtable]@{}
+                        ($Parameters.params | ConvertFrom-Json -ErrorAction Ignore).PSObject.Properties | Where-Object MemberType -eq "NoteProperty" | Foreach-Object {$Params[$_.Name] = $_.Value}
+                        $Result = Invoke-UnMineableRequest $Parameters.endpoint $Parameters.key $Parameters.secret -method $Parameters.method -params $Params -Timeout $Parameters.Timeout -Cache 30
+                        $Status = $true
+                    }
+                } catch {}
+                $Data = [PSCustomObject]@{Status=$Status;Content=$Result} | ConvertTo-Json -Depth 10 -Compress
+
+                $Status = $Client = $Params = $Result = $null
+                Remove-Variable -Name Status, Client, Params, Result -ErrorAction Ignore
+            }
+            break
+        }
         "/mrrstats" {
             [System.Collections.ArrayList]$Mrr_Data = @()
             $CpuDevices = ($API.Devices | Where-Object Type -eq "CPU" | Measure-Object).Count
@@ -1736,7 +1853,7 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
                 $ActiveMiners = @()
 
                 if ($API.ActiveMiners) {
-                    $ActiveMiners = ConvertFrom-Json $API.ActiveMiners -ErrorAction Ignore
+                    $ActiveMiners = ConvertFrom-APIJson $API.ActiveMiners
                 }
 
                 [hashtable]$StatsCPU = @{}
@@ -1783,7 +1900,7 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
                     $ActiveMiners = @()
 
                     if ($API.ActiveMiners) {
-                        $ActiveMiners = ConvertFrom-Json $API.ActiveMiners -ErrorAction Ignore
+                        $ActiveMiners = ConvertFrom-APIJson $API.ActiveMiners
                     }
                     
                     [hashtable]$StatsCPU = @{}
@@ -1845,6 +1962,291 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
             $Data = if ($Data) {ConvertTo-Json $Data -Depth 10} else {"[]"}
             break
         }
+        "/minerapis" {
+            # class names of Modules\MinerAPIs.psm1 for the custom miner form (Wrapper first); cached per file version
+            $APIsFile = ".\Modules\MinerAPIs.psm1"
+            $APIsLwt  = (Get-ChildItem $APIsFile).LastWriteTimeUtc
+            $CacheTime = (Get-Date).ToUniversalTime()
+            if (-not $APICacheDB.ContainsKey("minerapis") -or $APICacheDB["minerapis"].LastWrite -ne $APIsLwt) {
+                $APIsList = @([regex]::Matches((Get-ContentByStreamReader $APIsFile),"(?m)^class\s+(\w+)\s*:\s*Miner\b") | Foreach-Object {$_.Groups[1].Value} | Where-Object {$_ -notin @("Wrapper","CustomWrapper")} | Sort-Object -Unique)
+                $APICacheDB["minerapis"] = [PSCustomObject]@{LastWrite = $APIsLwt; LastAccess = $CacheTime; Data = @(@("Wrapper") + $APIsList)}
+            }
+            $APICacheDB["minerapis"].LastAccess = $CacheTime
+            $Data = ConvertTo-Json @($APICacheDB["minerapis"].Data) -Depth 10
+            $APIsFile = $APIsLwt = $APIsList = $CacheTime = $null
+            Break
+        }
+        "/customminers" {
+            # raw definitions of customminers.config.txt (the form edits the raw strings) plus a per-miner status block
+            $CmConfig = Get-ConfigContent "CustomMiners"
+            $Data = if ($CmConfig -and $CmConfig -isnot [string] -and $CmConfig -isnot [array]) {
+                ConvertTo-Json @($CmConfig.PSObject.Properties | Foreach-Object {
+                    $CmName = $_.Name
+                    $CmDef  = $_.Value
+                    $CmOS   = $CmDef."$(Get-CustomMinerPlatform)"
+                    $CmUri  = "$($CmOS.Uri)".Trim()
+                    $CmExe  = "$($CmOS.Path)".Trim() -replace "^[\\/]+" -replace "/","\"
+                    $CmBin  = if ($CmExe) {".\Bin\Custom-$($CmName)\$($CmExe)"} else {""}
+                    $CmUriMatch = $false
+                    if ($CmUri -and (Test-Path ".\Bin\Custom-$($CmName)\_uri.json")) {
+                        try {$CmUriMatch = (Get-ContentByStreamReader ".\Bin\Custom-$($CmName)\_uri.json" | ConvertFrom-Json -ErrorAction Stop).URI -eq $CmUri} catch {}
+                    }
+                    $CmOut = [PSCustomObject]@{Name = $CmName}
+                    $CmDef.PSObject.Properties | Where-Object {$_.Name -ne "Name"} | Foreach-Object {$CmOut | Add-Member $_.Name $_.Value -Force}
+                    $CmOut | Add-Member Status ([PSCustomObject]@{
+                        Valid          = Test-CustomMinerName $CmName
+                        HasBinaryForOS = [bool]($CmUri -and $CmExe)
+                        Installed      = [bool]($CmBin -and (Test-Path $CmBin))
+                        UriMatch       = $CmUriMatch
+                        StatCount      = (Get-ChildItem ".\Stats\Miners" -File -Filter "*-$($CmName)-*_Hashrate.txt" -ErrorAction Ignore | Measure-Object).Count
+                    }) -Force
+                    $CmOut
+                }) -Depth 10
+            } else {"[]"}
+            $CmConfig = $CmName = $CmDef = $CmOS = $CmUri = $CmExe = $CmBin = $CmUriMatch = $CmOut = $null
+            Break
+        }
+        "/savecustomminer" {
+            # POST Action=add|update|delete, Name, [OldName], Data=<definition json>, [Userpool=<userpool json>]
+            $Success = $false
+            $ErrMsg  = ""
+            $UpWarning = ""
+            if ($API.LockConfig) {
+                $ErrMsg = "The configuration is locked (APIlockConfig in config.txt)"
+            } elseif (Test-ConfigManagedByServer "customminers") {
+                $ErrMsg = "customminers.config.txt is managed by the server $($Session.Config.ServerName)"
+            } else {
+                try {
+                    $CmAction = "$($Parameters.Action)".Trim().ToLower()
+                    $CmName   = "$($Parameters.Name)".Trim()
+                    $CmOld    = "$($Parameters.OldName)".Trim()
+                    if ($CmAction -notin @("add","update","delete")) {throw "Unknown action"}
+                    if (-not (Test-CustomMinerName $CmName)) {throw "Invalid name: use letters, digits and underscore only, and not the name of a built-in miner"}
+
+                    $ConfigActual = Get-ConfigContent "CustomMiners"
+                    if ($ConfigActual -eq $null -or $ConfigActual -is [string] -or $ConfigActual -is [array]) {$ConfigActual = [PSCustomObject]@{}}
+                    $ChangeTag = Get-ContentDataMD5hash($ConfigActual)
+
+                    if ($CmAction -eq "delete") {
+                        if ($ConfigActual.PSObject.Properties[$CmName]) {[void]$ConfigActual.PSObject.Properties.Remove($CmName)}
+                    } else {
+                        if ("$($Parameters.Data)" -eq "") {throw "No data received"}
+                        $CmData = $Parameters.Data | ConvertFrom-Json -ErrorAction Stop
+
+                        $CmVendors = @(Get-ConfigArray "$($CmData.Vendors)" | Foreach-Object {"$_".Trim().ToUpper()} | Where-Object {$_ -in @("AMD","CPU","INTEL","NVIDIA")} | Select-Object -Unique)
+                        if (-not $CmVendors.Count) {throw "Select at least one device type (AMD, CPU, INTEL, NVIDIA)"}
+                        if ("$($CmData.Port)".Trim() -notmatch "^\d+$" -or [int]"$($CmData.Port)".Trim() -lt 1024 -or [int]"$($CmData.Port)".Trim() -gt 65000) {throw "The API port must be a number between 1024 and 65000"}
+                        if (-not (("$($CmData.Windows.Uri)".Trim() -and "$($CmData.Windows.Path)".Trim()) -or ("$($CmData.Linux.Uri)".Trim() -and "$($CmData.Linux.Path)".Trim()) -or ("$($CmData.LinuxArm.Uri)".Trim() -and "$($CmData.LinuxArm.Path)".Trim()))) {throw "Enter a download URL and the executable for at least one platform (Windows, Linux or Linux ARM)"}
+                        if ("$($CmData.HashRateRegex)".Trim() -ne "") {
+                            try {[void][regex]::new("$($CmData.HashRateRegex)".Trim())} catch {throw "Invalid hashrate regex: $($_.Exception.Message)"}
+                        } elseif ("$($CmData.API)".Trim() -ne "" -and "$($CmData.API)".Trim() -ne "Wrapper" -and (Get-ContentByStreamReader ".\Modules\MinerAPIs.psm1") -notmatch "(?m)^class\s+$([regex]::Escape("$($CmData.API)".Trim()))\s*:\s*Miner\b") {
+                            throw "Unknown API class $($CmData.API)"
+                        }
+                        $CmCommands = @(@($CmData.Commands) | Where-Object {$_ -ne $null -and $_ -isnot [string] -and "$($_.MainAlgorithm)".Trim() -ne ""} | Foreach-Object {
+                            $_.MainAlgorithm = Get-Algorithm "$($_.MainAlgorithm)".Trim()
+                            $_
+                        })
+                        if (-not $CmCommands.Count) {throw "Add at least one algorithm"}
+                        $CmData | Add-Member Commands $CmCommands -Force
+                        $CmData | Add-Member Vendors ($CmVendors -join ",") -Force
+                        if ("$($CmData.Version)".Trim() -eq "") {$CmData | Add-Member Version "1.0" -Force}
+                        if ($CmData.PSObject.Properties["Name"]) {[void]$CmData.PSObject.Properties.Remove("Name")}
+                        if ($CmData.PSObject.Properties["Status"]) {[void]$CmData.PSObject.Properties.Remove("Status")}
+
+                        if ($CmAction -eq "add" -and $ConfigActual.PSObject.Properties[$CmName]) {throw "A custom miner named $($CmName) exists already"}
+                        if ($CmAction -eq "update" -and $CmOld -ne "" -and $CmOld -ne $CmName) {
+                            if ($ConfigActual.PSObject.Properties[$CmName]) {throw "A custom miner named $($CmName) exists already"}
+                            if ($ConfigActual.PSObject.Properties[$CmOld]) {[void]$ConfigActual.PSObject.Properties.Remove($CmOld)}
+                        }
+                        $ConfigActual | Add-Member $CmName $CmData -Force
+                    }
+
+                    $Sorted = [PSCustomObject]@{}
+                    $ConfigActual.PSObject.Properties.Name | Sort-Object | Foreach-Object {$Sorted | Add-Member $_ $ConfigActual.$_ -Force}
+                    $Success = Set-ContentJson -PathToFile $Session.ConfigFiles["CustomMiners"].Path -Data $Sorted -MD5hash $ChangeTag
+                    if (-not $Success) {throw "Could not write customminers.config.txt"}
+
+                    # optional: create or update the userpool that came with a flight sheet (matched by name and currency)
+                    if ("$($Parameters.Userpool)" -ne "" -and (Test-Config "Userpools" -Exists)) {
+                        if (Test-ConfigManagedByServer "userpools") {
+                            $UpWarning = "userpools.config.txt is managed by the server $($Session.Config.ServerName), the pool was not saved"
+                        } else {
+                            try {
+                                $UpEntry = ConvertTo-UserpoolEntry -Data ($Parameters.Userpool | ConvertFrom-Json -ErrorAction Stop) -Entries @(Get-UserpoolEntries)
+                                [void](Set-UserpoolEntry -Action add -Entry $UpEntry -MatchExisting)
+                                Set-PoolsConfigDefault -Force > $null
+                            } catch {
+                                $UpWarning = "The userpool was not saved: $($_.Exception.Message)"
+                            }
+                        }
+                    }
+                } catch {
+                    $Success = $false
+                    $ErrMsg = "$($_.Exception.Message)"
+                    Write-ToFile -FilePath "Logs\errors_$(Get-Date -Format "yyyy-MM-dd").api.txt" -Message "[$ThreadID] Error saving custom miner: $($_.Exception.Message)" -Append -Timestamp
+                }
+            }
+            $Data = ConvertTo-Json ([PSCustomObject]@{Success=$Success;Error=$ErrMsg;Warning="$UpWarning"}) -Depth 10
+            $CmAction = $CmName = $CmOld = $CmData = $CmVendors = $CmCommands = $ConfigActual = $ChangeTag = $Sorted = $UpEntry = $UpWarning = $Success = $ErrMsg = $null
+            Break
+        }
+        "/userpools" {
+            # raw entries of userpools.config.txt (the form edits the raw strings, placeholders like $Wallet stay literal) with the array index, a change tag and a status block
+            $UpList = @()
+            try {
+                $UpEntries  = @(Get-UserpoolEntries)
+                $UpPools    = if (Test-Config "Pools" -Exists) {Get-ConfigContent "Pools"} else {$null}
+                $UpConfig   = if (Test-Config "Config" -Exists) {Get-ConfigContent "Config"} else {$null}
+                $UpSelected = @(Get-ConfigPoolNames $UpConfig)
+                $UpExcluded = @(Get-ConfigPoolNames $UpConfig -Field "ExcludePoolName")
+                $UpHasDefaultWallet = "$($Session.Config.Wallet)" -ne ""
+                for ($UpIx = 0; $UpIx -lt $UpEntries.Count; $UpIx++) {
+                    $UpEntry = $UpEntries[$UpIx]
+                    $UpName  = "$($UpEntry.Name)".Trim()
+                    if ($UpName -eq "") {continue}
+                    $UpCur   = $(if ("$($UpEntry.Currency)".Trim() -ne "") {"$($UpEntry.Currency)"} else {"$($UpEntry.CoinSymbol)"}).Trim().ToUpper()
+                    $UpSym   = "$($UpEntry.CoinSymbol)".Trim().ToUpper()
+                    $UpCoin  = if ($UpSym -ne "") {Get-Coin $UpSym} else {$null}
+                    $UpAlgo  = if ($UpCoin -ne $null) {"$($UpCoin.Algo)"} elseif ("$($UpEntry.Algorithm)".Trim() -ne "") {Get-Algorithm "$($UpEntry.Algorithm)".Trim()} else {""}
+                    $UpSection = if ($UpPools -ne $null -and $UpPools -isnot [string] -and $UpPools.PSObject.Properties[$UpName]) {$UpPools.$UpName} else {$null}
+                    $UpWallet  = if ($UpSection -ne $null -and $UpCur -ne "" -and $UpSection.PSObject.Properties[$UpCur]) {"$($UpSection.$UpCur)".Trim()} else {""}
+                    $UpOut = [PSCustomObject]@{Index = $UpIx; Tag = Get-ContentDataMD5hash($UpEntry)}
+                    $UpEntry.PSObject.Properties | Foreach-Object {$UpOut | Add-Member $_.Name $_.Value -Force}
+                    $UpOut | Add-Member Status ([PSCustomObject]@{
+                        Valid      = Test-UserpoolName $UpName
+                        Enabled    = Get-Yes $UpEntry.Enable
+                        Complete   = ($UpCur -ne "" -and "$($UpEntry.Host)".Trim() -ne "")
+                        Currency   = $UpCur
+                        CoinKnown  = ($UpCoin -ne $null)
+                        CoinName   = "$(if ($UpCoin -ne $null) {$UpCoin.Name} else {$UpEntry.CoinName})"
+                        Algorithm  = "$UpAlgo"
+                        Region     = $(if ("$($UpEntry.Region)".Trim() -ne "") {"$(Get-Region "$($UpEntry.Region)".Trim())"} else {"US"})
+                        HasSection = ($UpSection -ne $null)
+                        Wallet     = $UpWallet
+                        HasWallet  = ($UpWallet -ne "" -and (-not $UpWallet.StartsWith('$') -or $UpHasDefaultWallet))
+                        Selected   = (-not $UpSelected.Count -or $UpSelected -icontains $UpName)
+                        Excluded   = [bool]($UpExcluded -icontains $UpName)
+                    }) -Force
+                    $UpList += $UpOut
+                }
+            } catch {
+                Write-ToFile -FilePath "Logs\errors_$(Get-Date -Format "yyyy-MM-dd").api.txt" -Message "[$ThreadID] Error reading userpools: $($_.Exception.Message)" -Append -Timestamp
+            }
+            $Data = ConvertTo-Json @($UpList) -Depth 10
+            $UpList = $UpEntries = $UpPools = $UpConfig = $UpSelected = $UpExcluded = $UpHasDefaultWallet = $UpIx = $UpEntry = $UpName = $UpCur = $UpSym = $UpCoin = $UpAlgo = $UpSection = $UpWallet = $UpOut = $null
+            Break
+        }
+        "/userpoolinfo" {
+            # lookups for the User Pools form (full algorithm list, coin database, regions, built-in pool names; cached per data file version)
+            # plus the live state of config.txt (PoolName, ExcludePoolName, server-managed files), which is read fresh on every call
+            $UpCacheTime = (Get-Date).ToUniversalTime()
+            $UpLwt = @(@("coinsdb","algorithms","regions") | Foreach-Object {(Get-ChildItem ".\Data\$($_).json" -ErrorAction Ignore).LastWriteTimeUtc.Ticks}) -join "-"
+            if (-not $APICacheDB.ContainsKey("userpoolinfo") -or $APICacheDB["userpoolinfo"].LastWrite -ne $UpLwt) {
+                Get-CoinsDB -Silent
+                $UpCoins = [ordered]@{}
+                foreach ($UpSym in @($Session.GlobalCoinsDB.Keys | Sort-Object)) {
+                    $UpCoins[$UpSym] = [ordered]@{Algo = "$($Session.GlobalCoinsDB[$UpSym].Algo)"; Name = "$($Session.GlobalCoinsDB[$UpSym].Name)"}
+                }
+                $UpStatic = [ordered]@{
+                    Algorithms   = @(Get-Algorithms -Values)
+                    Coins        = $UpCoins
+                    Regions      = @((Get-Regions -AsHash).Values | Sort-Object -Unique)
+                    EthModes     = @("","ethproxy","ethstratumnh","qtminer","minerproxy","stratum")
+                    BuiltinPools = @(Get-ChildItem ".\Pools\*.ps1" -File -ErrorAction Ignore | Select-Object -ExpandProperty BaseName | Sort-Object)
+                }
+                $APICacheDB["userpoolinfo"] = [PSCustomObject]@{LastWrite = $UpLwt; LastAccess = $UpCacheTime; Data = (ConvertTo-Json $UpStatic -Depth 10 -Compress)}
+            }
+            $APICacheDB["userpoolinfo"].LastAccess = $UpCacheTime
+            $UpConfig = if (Test-Config "Config" -Exists) {Get-ConfigContent "Config"} else {$null}
+            $UpLive = [ordered]@{
+                PoolName          = @(Get-ConfigPoolNames $UpConfig)
+                PoolNameIsDefault = ("$($UpConfig.PoolName)".Trim() -eq "`$PoolName")
+                ExcludePoolName   = @(Get-ConfigPoolNames $UpConfig -Field "ExcludePoolName")
+                Managed           = [ordered]@{Userpools = (Test-ConfigManagedByServer "userpools"); Pools = (Test-ConfigManagedByServer "pools"); Config = (Test-ConfigManagedByServer "config")}
+                ServerName        = "$($Session.Config.ServerName)"
+                WorkerName        = "$($Session.Config.WorkerName)"
+                HasDefaultWallet  = ("$($Session.Config.Wallet)" -ne "")
+            }
+            # splice the live block into the cached static json object
+            $Data = $APICacheDB["userpoolinfo"].Data
+            $Data = $Data.Substring(0, $Data.Length - 1) + "," + (ConvertTo-Json $UpLive -Depth 10 -Compress).Substring(1)
+            $UpCacheTime = $UpLwt = $UpCoins = $UpSym = $UpStatic = $UpConfig = $UpLive = $null
+            Break
+        }
+        "/saveuserpool" {
+            # POST Action=add|update|delete|poolname|wallet, [Index], [Tag], [Data=<entry json>], [SetWallet=1, Wallet=<wallet>], [AddToPoolName=1], [Name, Currency (poolname and wallet only)]
+            $Success = $false
+            $ErrMsg  = ""
+            $UpWarn  = @()
+            $UpIndex = -1
+            $UpName  = ""
+            $UpCur   = ""
+            if ($API.LockConfig) {
+                $ErrMsg = "The configuration is locked (APIlockConfig in config.txt)"
+            } else {
+                try {
+                    $UpAction = "$($Parameters.Action)".Trim().ToLower()
+                    if ($UpAction -notin @("add","update","delete","poolname","wallet")) {throw "Unknown action"}
+                    # the entries may come from the server while pools.config.txt and config.txt are still local: wallet and poolname stay possible then
+                    if ($UpAction -in @("add","update","delete") -and (Test-ConfigManagedByServer "userpools")) {throw "userpools.config.txt is managed by the server $($Session.Config.ServerName)"}
+                    if ($UpAction -eq "poolname" -and (Test-ConfigManagedByServer "config")) {throw "config.txt is managed by the server $($Session.Config.ServerName)"}
+                    if ($UpAction -eq "wallet" -and (Test-ConfigManagedByServer "pools")) {throw "pools.config.txt is managed by the server $($Session.Config.ServerName)"}
+                    if ($UpAction -eq "poolname") {
+                        $UpName = "$($Parameters.Name)".Trim()
+                        if (-not (Test-UserpoolName $UpName)) {throw "Invalid pool name"}
+                    } elseif ($UpAction -eq "wallet") {
+                        $UpName = "$($Parameters.Name)".Trim()
+                        $UpCur  = "$($Parameters.Currency)".Trim().ToUpper()
+                        if (-not (Test-UserpoolName $UpName)) {throw "Invalid pool name"}
+                        if ($UpCur -notmatch "^[A-Z0-9\-]+$") {throw "Invalid currency"}
+                        $UpMatch = @(Get-UserpoolEntries | Where-Object {"$($_.Name)" -ieq $UpName} | Select-Object -First 1)
+                        if (-not $UpMatch.Count) {throw "There is no user pool named $($UpName)"}
+                        $UpName = "$($UpMatch[0].Name)"
+                        Set-UserpoolWallet -Name $UpName -Currency $UpCur -Wallet "$($Parameters.Wallet)".Trim()
+                    } elseif ($UpAction -eq "delete") {
+                        if ("$($Parameters.Index)" -notmatch "^\d+$") {throw "No entry selected"}
+                        $UpIndex = Set-UserpoolEntry -Action delete -Index ([int]"$($Parameters.Index)") -Tag "$($Parameters.Tag)"
+                    } else {
+                        if ("$($Parameters.Data)" -eq "") {throw "No data received"}
+                        $UpEntry = ConvertTo-UserpoolEntry -Data ($Parameters.Data | ConvertFrom-Json -ErrorAction Stop) -Entries @(Get-UserpoolEntries)
+                        $UpName  = $UpEntry.Name
+                        $UpCur   = $UpEntry.Currency
+                        if ($UpAction -eq "update") {
+                            if ("$($Parameters.Index)" -notmatch "^\d+$") {throw "No entry selected"}
+                            $UpIndex = Set-UserpoolEntry -Action update -Entry $UpEntry -Index ([int]"$($Parameters.Index)") -Tag "$($Parameters.Tag)"
+                        } else {
+                            $UpIndex = Set-UserpoolEntry -Action add -Entry $UpEntry
+                        }
+                        # the pools.config.txt section of the pool is created right away (Core would do it after the next round), the wallet only on request
+                        if (Test-ConfigManagedByServer "pools") {
+                            if (Get-Yes $Parameters.SetWallet) {$UpWarn += "pools.config.txt is managed by the server $($Session.Config.ServerName), the wallet was not written"}
+                        } elseif (Get-Yes $Parameters.SetWallet) {
+                            Set-UserpoolWallet -Name $UpName -Currency $UpCur -Wallet "$($Parameters.Wallet)".Trim()
+                        } else {
+                            Set-PoolsConfigDefault -Force > $null
+                        }
+                    }
+                    if ($UpAction -ne "delete") {
+                        if (Get-Yes $Parameters.AddToPoolName) {
+                            if (Test-ConfigManagedByServer "config") {
+                                $UpWarn += "config.txt is managed by the server $($Session.Config.ServerName), PoolName was not changed"
+                            } else {
+                                Add-ConfigPoolName -Name $UpName > $null
+                            }
+                        }
+                        if (@(Get-ConfigPoolNames -Field "ExcludePoolName") -icontains $UpName) {$UpWarn += "$($UpName) is listed in ExcludePoolName, the pool will not be used"}
+                    }
+                    $Success = $true
+                } catch {
+                    $Success = $false
+                    $ErrMsg = "$($_.Exception.Message)"
+                    Write-ToFile -FilePath "Logs\errors_$(Get-Date -Format "yyyy-MM-dd").api.txt" -Message "[$ThreadID] Error saving userpool: $($_.Exception.Message)" -Append -Timestamp
+                }
+            }
+            $Data = ConvertTo-Json ([PSCustomObject]@{Success=$Success;Error=$ErrMsg;Index=$UpIndex;Name=$UpName;Currency=$UpCur;Warnings=@($UpWarn)}) -Depth 10
+            $Success = $ErrMsg = $UpWarn = $UpIndex = $UpName = $UpCur = $UpAction = $UpEntry = $UpMatch = $null
+            Break
+        }
         default {
             # Set index page
             if ($Path -eq "/") {
@@ -1858,25 +2260,55 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
                 # Otherwise, just return the contents of the file
                 $File = Get-ChildItem $Filename -ErrorAction Ignore
 
-                If ($File.Extension -eq ".ps1") {
-                    $Data = (& $File.FullName -Parameters $Parameters) -join "`r`n"
-                } elseif (@(".html",".css",".js",".json",".xml",".txt") -icontains $File.Extension) {
-                    $Data = Get-ContentByStreamReader $Filename
+                # --- static file caching ------------------------------------------------
+                # /vendor/ libraries live in versioned folders -> safe to cache forever.
+                # Own assets get a short freshness window plus a Last-Modified validator,
+                # so repeat visits revalidate with cheap 304 responses instead of full
+                # downloads. HTML is assembled from server side includes (multiple source
+                # files), so a single file date is no valid validator -> always no-cache.
+                # .ps1 endpoints are actions and must never be cached.
+                if ($File.Extension -eq ".ps1") {
+                    $CacheControl = "no-store"
+                } elseif ($Path -match '^/vendor/') {
+                    $CacheControl = "public, max-age=31536000, immutable"
+                } elseif ($File.Extension -match '^\.(js|css|png|jpe?g|gif|svg|ico|woff2?|json)$') {
+                    $CacheControl = "public, max-age=300"
+                    $LastModified = $File.LastWriteTimeUtc
+                } else {
+                    $CacheControl = "no-cache"
+                }
 
-                    if ($Data -and $File.Extension -match "htm") {
-                        # Process server side includes for html files
-                        # Includes are in the traditional '<!-- #include file="/path/filename.html" -->' format used by many web servers
-                        $IncludeRegex = [regex]'<!-- *#include *file="(.*?)" *-->'
-                        $IncludeRegex.Matches($Data) | Foreach-Object {
-                            $IncludeFile = Join-Path $BasePath $_.Groups[1].Value
-                            If (Test-Path $IncludeFile -PathType Leaf) {
-                                $IncludeData = Get-ContentByStreamReader $IncludeFile
-                                $Data = $Data -Replace $_.Value, $IncludeData
+                if ($LastModified -and ($IfModifiedSince = $Request.Headers["If-Modified-Since"])) {
+                    try {
+                        # compare at whole-second precision (http dates have no milliseconds)
+                        if ([DateTime]::Parse($IfModifiedSince).ToUniversalTime() -ge [DateTime]::Parse($LastModified.ToString("R")).ToUniversalTime()) {
+                            $Data        = ""
+                            $StatusCode  = [System.Net.HttpStatusCode]::NotModified
+                        }
+                    } catch {}
+                }
+
+                if ($StatusCode -ne [System.Net.HttpStatusCode]::NotModified) {
+                    If ($File.Extension -eq ".ps1") {
+                        $Data = (& $File.FullName -Parameters $Parameters) -join "`r`n"
+                    } elseif (@(".html",".css",".js",".json",".xml",".txt") -icontains $File.Extension) {
+                        $Data = Get-ContentByStreamReader $Filename
+
+                        if ($Data -and $File.Extension -match "htm") {
+                            # Process server side includes for html files
+                            # Includes are in the traditional '<!-- #include file="/path/filename.html" -->' format used by many web servers
+                            $IncludeRegex = [regex]'<!-- *#include *file="(.*?)" *-->'
+                            $IncludeRegex.Matches($Data) | Foreach-Object {
+                                $IncludeFile = Join-Path $BasePath $_.Groups[1].Value
+                                If (Test-Path $IncludeFile -PathType Leaf) {
+                                    $IncludeData = Get-ContentByStreamReader $IncludeFile
+                                    $Data = $Data -Replace $_.Value, $IncludeData
+                                }
                             }
                         }
+                    } else {
+                        $Data = [System.IO.File]::ReadAllBytes($File.FullName)
                     }
-                } else {
-                    $Data = [System.IO.File]::ReadAllBytes($File.FullName)
                 }
 
                 $ContentType = Get-MimeType $File.Extension
@@ -1900,6 +2332,13 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
     try {
         if ($ContentFileName -ne "") {
             [void]$Response.Headers.Add("Content-Disposition", "attachment; filename=$($ContentFileName)")
+        }
+
+        # cache policy: static files set $CacheControl above; everything else
+        # (all live API data endpoints) defaults to no-cache
+        [void]$Response.Headers.Add("Cache-Control", $(if ($CacheControl) {$CacheControl} else {"no-cache"}))
+        if ($LastModified) {
+            [void]$Response.Headers.Add("Last-Modified", $LastModified.ToString("R"))
         }
 
         $Response.ContentType = $ContentType
@@ -1973,6 +2412,13 @@ While ($APIHttpListener.IsListening -and -not $API.Stop) {
     $key = $null
 
     if ($GCStopWatch.Elapsed.TotalSeconds -gt 120) {
+        $GCRuns++
+        if ($GCRuns -ge 10) {
+            # the per-round JSON payloads land on the large object heap - compact
+            # it once in a while, otherwise the freed blocks only fragment it
+            [System.Runtime.GCSettings]::LargeObjectHeapCompactionMode = [System.Runtime.GCLargeObjectHeapCompactionMode]::CompactOnce
+            $GCRuns = 0
+        }
         [System.GC]::Collect()
         $GCStopWatch.Restart()
     }

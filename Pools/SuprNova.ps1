@@ -15,82 +15,113 @@ param(
 
 # $Name = Get-Item $MyInvocation.MyCommand.Path | Select-Object -ExpandProperty BaseName
 
+$Pool_Fee_Percent = 1.0
+
+$Pool_Request = [PSCustomObject]@{}
+
+try {
+    $Pool_Request = Invoke-RestMethodAsync "https://www.suprnova.cc/api.php" -tag $Name -cycletime 120 -delay 750 -timeout 30
+}
+catch {
+    Write-Log -Level Warn "Pool API ($Name) has failed. "
+    return
+}
+
+if ($Pool_Request.status -ne "ok") {
+    Write-Log -Level Warn "Pool API ($Name) returned nothing. "
+    return
+}
+
+
+$Pools_Region_Stratums = @{
+    "us-east" = "stratum-us"
+    "asia"    = "stratum-apac"
+}
+
 [hashtable]$Pool_RegionsTable = @{}
 
 $Pool_Regions = @("eu","us-west","us-east","asia")
 $Pool_Regions | Foreach-Object {$Pool_RegionsTable.$_ = Get-Region $_}
 
-$Pool_Request = [PSCustomObject]@{}
-
 $Pools_Data = @(
-    [PSCustomObject]@{symbol = "BCI"     ; rpc = "bci"     ; fee = 1.0; port = 9166}
-    [PSCustomObject]@{symbol = "BTG"     ; rpc = "btg"     ; fee = 1.0; port = @(8866,8817)}
-    [PSCustomObject]@{symbol = "BUTK-Take2"     ; rpc = "butk-gr"    ; fee = 1.0; port = 8382}
-    [PSCustomObject]@{symbol = "BUTK-Lyra2z330" ; rpc = "butk-lyra2" ; fee = 1.0; port = 4020}
-	[PSCustomObject]@{symbol = "DASH"    ; rpc = "dash"    ; fee = 1.0; stratum = @([PSCustomObject]@{region="eu";port=@(80,443);host="dash80"})}
-    [PSCustomObject]@{symbol = "DGB-Qubit"      ; rpc = "dgbq"       ; fee = 1.0; port = 8531}
-    [PSCustomObject]@{symbol = "DGB-Skein"      ; rpc = "dgbs"       ; fee = 1.0; port = 5226}
-	[PSCustomObject]@{symbol = "DYN"     ; rpc = "dyn"     ; fee = 1.0; port = 5960}
-	[PSCustomObject]@{symbol = "GAP"     ; rpc = "gap"     ; fee = 1.0; port = 2433}
-	[PSCustomObject]@{symbol = "GRS"     ; rpc = "grs"     ; fee = 0.0; port = 5544}
-    [PSCustomObject]@{symbol = "LUX"     ; rpc = "lux"     ; fee = 1.0; port = 5722}
-    [PSCustomObject]@{symbol = "MONA"    ; rpc = "mona"    ; fee = 1.0; port = 2995}
-    [PSCustomObject]@{symbol = "OBTC"    ; rpc = "obtc"    ; fee = 1.0; port = [PSCustomObject]@{CPU=4074;GPU=4075}}
-	[PSCustomObject]@{symbol = "RIC"     ; rpc = "ric"     ; fee = 1.0; port = 5000}
-    [PSCustomObject]@{symbol = "ROI"     ; rpc = "roi"     ; fee = 1.0; port = 4699}
-    [PSCustomObject]@{symbol = "RTM"     ; rpc = "rtm"     ; fee = 1.0; stratum = @([PSCustomObject]@{region="eu";port=6273;host="rtm"},[PSCustomObject]@{region="us-east";port=6273;host="stratum.us-ny1"},[PSCustomObject]@{region="us-west";port=6273;host="stratum.us-la1"},[PSCustomObject]@{region="asia";port=6273;host="stratum.apac-hkg1"})}
-    [PSCustomObject]@{symbol = "RVN"     ; rpc = "rvn"     ; fee = 0.5; stratum = @([PSCustomObject]@{region="eu";port=8888;host="rvn"},[PSCustomObject]@{region="us-east";port=8855;host="stratum.us-ny1"},[PSCustomObject]@{region="us-west";port=8855;host="stratum.us-la1"},[PSCustomObject]@{region="asia";port=8855;host="stratum.apac-hkg1"})}
-    [PSCustomObject]@{symbol = "VTC"     ; rpc = "vtc"     ; fee = 1.0; stratum = @([PSCustomObject]@{region="eu";port=1777;host="vtc"},[PSCustomObject]@{region="us-west";port=1777;host="stratum.us-la1"})}
-	[PSCustomObject]@{symbol = "XCN"     ; rpc = "xcn"     ; fee = 1.0; port = 8008}
-    [PSCustomObject]@{symbol = "YTN"     ; rpc = "ytn"     ; fee = 1.0; port = 4932}
-	[PSCustomObject]@{symbol = "ZEN"     ; rpc = "zen"     ; fee = 1.0; port = @(3618,3621)}
-    [PSCustomObject]@{symbol = "ZER"     ; rpc = "zero"    ; fee = 1.0; port = @(6568,6569)}
-
-    #Currently disabled
-    #[PSCustomObject]@{symbol = "BEAM"    ; rpc = "beam"    ; fee = 1.0; port = @(7786,7787)}
-    #[PSCustomObject]@{symbol = "BTX"     ; rpc = "btx"     ; fee = 1.0; port = 3629}
-    #[PSCustomObject]@{symbol = "BSD"     ; rpc = "bsd"     ; fee = 1.0; port = 8686}
-    #[PSCustomObject]@{symbol = "ERC"     ; rpc = "erc"     ; fee = 1.0; port = 7674}
-    #[PSCustomObject]@{symbol = "GRLC"    ; rpc = "grlc"    ; fee = 1.0; port = 8600}
-    #[PSCustomObject]@{symbol = "HODL"    ; rpc = "hodl"    ; fee = 1.0; port = 4693}
-    #[PSCustomObject]@{symbol = "MNX"     ; rpc = "mnx"     ; fee = 1.0; port = @(7077,7078)}
-    #[pscustomobject]@{symbol = "VEIL"    ; rpc = "veil"    ; fee = 1.0; port = 7220}
-    #[pscustomobject]@{symbol = "XVG-X17" ; rpc = "xvg-x17" ; fee = 1.0; port = 7477}
+    [PSCustomObject]@{symbol = "BC3"    ; port = @(7701,7704)                                   ; regions = @("eu")}
+    [PSCustomObject]@{symbol = "BLOZ"   ; port = @(7304)                                        ; regions = @("eu")}
+    [PSCustomObject]@{symbol = "C64"    ; port = @(6464,6469)                                   ; regions = @("eu","us-east","asia")}
+    [PSCustomObject]@{symbol = "DCR"    ; port = @(9332,9336)                                   ; regions = @("eu","us-east","asia")}
+    [PSCustomObject]@{symbol = "DGB";   ; port = @(8531)                                        ; regions = @("eu")}
+    [PSCustomObject]@{symbol = "FAIR"   ; port = @(3833,3834)                                   ; regions = @("eu","asia")}
+	[PSCustomObject]@{symbol = "GAP"    ; port = @(2433)                                        ; regions = @("eu")}
+	[PSCustomObject]@{symbol = "GRS"    ; port = @(5544)                                        ; regions = @("eu","us-east")}
+    [PSCustomObject]@{symbol = "JUNO"   ; port = @(8383)                                        ; regions = @("eu","us-east")}
+    [PSCustomObject]@{symbol = "KRX"    ; port = @([PSCustomObject]@{CPU=@(4401);GPU=@(4404)})  ; regions = @("eu","us-east")}
+    [PSCustomObject]@{symbol = "LPEPE"  ; port = @(3633,3634)                                   ; regions = @("eu","asia")}
+    [PSCustomObject]@{symbol = "NOID"   ; port = @(3337)                                        ; regions = @("eu","us-east")}
+    [PSCustomObject]@{symbol = "NPT"    ; port = @([PSCustomObject]@{CPU=@(3832);GPU=@(3833)})  ; regions = @("eu")}
+    [PSCustomObject]@{symbol = "OBTC"   ; port = @([PSCustomObject]@{CPU=@(4074);GPU=@(4075)})  ; regions = @("eu")}
+    [PSCustomObject]@{symbol = "PXC"    ; port = @(2026,2027)                                   ; regions = @("eu")}
+    [PSCustomObject]@{symbol = "QTC"    ; port = @(5555,5557)                                   ; regions = @("eu","us-east","asia")}
+    [PSCustomObject]@{symbol = "QUAN"   ; port = @(7072,7074)                                   ; regions = @("eu")}
+    [PSCustomObject]@{symbol = "PRL"    ; port = @(3373,3374)                                   ; regions = @("eu","us-east","asia")}
+	[PSCustomObject]@{symbol = "RIC"    ; port = @(5000)                                        ; regions = @("eu")}
+    [PSCustomObject]@{symbol = "RTM"    ; port = @(6273)                                        ; regions = @("eu")}
+    [PSCustomObject]@{symbol = "RVN"    ; port = @(8888,8889)                                   ; regions = @("eu")}
+    [PSCustomObject]@{symbol = "TSC"    ; port = @(3309)                                        ; regions = @("eu")}
+    [PSCustomObject]@{symbol = "VTC"    ; port = @(1777,1780)                                   ; regions = @("eu")}
+    [PSCustomObject]@{symbol = "XEL"    ; port = @(3333)                                        ; regions = @("eu","us-east","asia")}
+    [PSCustomObject]@{symbol = "XNT"    ; port = @([PSCustomObject]@{CPU=@(3832);GPU=@(3833)})  ; regions = @("eu")}
+	[PSCustomObject]@{symbol = "ZEC"    ; port = @(3732)                                        ; regions = @("eu")}
+    [PSCustomObject]@{symbol = "XMR"    ; port = @(6665,6666)                                   ; regions = @("eu","us-east")}
 )
 
-$Pools_Data | Where-Object {$Wallets."$($_.symbol -replace "-.+")" -or $InfoOnly} | ForEach-Object {
-    $Pool_Fee  = $_.fee
-    $Pool_Coin = Get-Coin $_.symbol
+# The api reports Qubitcoin and Quantus both with symbol QTC, so the symbol alone
+# cannot identify the coin. Translate the unique pool id into our own symbol.
+[hashtable]$Pools_Xlat = @{
+    "quantus" = "QUAN"
+}
+
+$Pool_Request.pools | Where-Object {-not $_.coming_soon} | ForEach-Object {
+    $Pool_Symbol = if ($_.id -and $Pools_Xlat[$_.id]) {$Pools_Xlat[$_.id]} else {$_.coin.symbol}
+
+    if (-not $Wallets."$($Pool_Symbol)" -and -not $InfoOnly) {return}
+
+    $Pool_Fee  = if ($_.mining.pool_fee_percent -eq $null) {$Pool_Fee_Percent} else {[double]$_.mining.pool_fee_percent}
+
+    if (-not ($Pool_Coin = Get-Coin $Pool_Symbol -Algorithm $_.coin.algorithm)) {
+        Write-Log -Level Warn "Pool $($Name): missing coin $($Pool_Symbol) in db"
+        return
+    }
+
     $Pool_Currency = $Pool_Coin.Symbol
     $Pool_Algorithm_Norm = $Pool_Coin.Algo
+
+    if (-not ($Pool_Data = $Pools_Data | Where-Object {$_.symbol -eq $Pool_Currency})) {
+        Write-Log -Level Warn "Pool $($Name): missing coindata $($Pool_Currency)"
+        return
+    }
+
     $Pool_EthProxy = if ($Pool_Algorithm_Norm -match $Global:RegexAlgoHasEthproxy) {"ethproxy"} elseif ($Pool_Algorithm_Norm -match $Global:RegexAlgoIsProgPow) {"stratum"} else {$null}
 
-    $Pool_Hashrate = $Pool_Workers = $null
+    $Pool_Hashrate = $_.stats.hashrate.pool
+    $Pool_Workers  = $_.stats.workers
+    $Pool_TSL      = $null
 
-    if (-not $InfoOnly) {
-        $Pool_Request = [PSCustomObject]@{}
+    if (-not $InfoOnly -and $_.urls.api) {
         try {
-            $Pool_Request = Invoke-WebRequestAsync "https://$($_.rpc).suprnova.cc/index.php" -tag $Name -retry 3 -timeout 15
-            if ($Pool_Request -match "b-poolhashrate.+?>([a-z0-9,\.\s]+?)<.+overview-mhs.+?>(.+?)/s") {
-                $Pool_Hashrate = [double]($Matches[1] -replace "[,\s]+") * $(Switch -Regex ($Matches[2] -replace "\s+") {"^k" {1e3};"^M" {1e6};"^G" {1e9};"^T" {1e12};"^P" {1e15};default {1}})
+            $Pool_SubRequest = Invoke-RestMethodAsync "$($_.urls.api)" -tag $Name -cycletime 120 -delay 250 -timeout 30
+            $lbf = $Pool_SubRequest.pool.lastBlockFound.foundAt
+            if ($lbf -ne $null) {
+                $Pool_TSL = [int]((Get-UnixTimestamp) - [int]$lbf)
             }
-            if ($Pool_Request -match "b-poolworkers.+?>([0-9,\s]+?)<") {
-                $Pool_Workers = [int]($Matches[1] -replace "[,\s]+")
-            }
-        } catch {
-            Write-Log -Level Warn "Pool API ($Name) for $($_.symbol) has failed. "        
+        }
+        catch {
+            Write-Log -Level Info "Pool API ($Name) has failed for pool $($_.id). "
         }
     }
 
-    if ($_.stratum) {
-        $Pool_Stratums = $_.stratum
-    } else {
-        $Pool_Stratums = @([PSCustomObject]@{region="eu";port=$_.port;host=$_.rpc})
-    }
-
-    foreach ($Pool_Stratum in $Pool_Stratums) {
+    foreach ($Pool_Region in $Pool_Data.regions) {
+        $Pool_Stratum = "$(if ($Pools_Region_Stratums[$Pool_Region]) {$Pools_Region_Stratums[$Pool_Region]} else {$_.id}).suprnova.cc"
         $Pool_SSL = $false
-        foreach ($Port in @($Pool_Stratum.port | Select-Object)) {
+        foreach ($Port in @($Pool_Data.port | Select-Object)) {
             [PSCustomObject]@{
                 Algorithm     = $Pool_Algorithm_Norm
                 Algorithm0    = $Pool_Algorithm_Norm
@@ -101,18 +132,19 @@ $Pools_Data | Where-Object {$Wallets."$($_.symbol -replace "-.+")" -or $InfoOnly
                 StablePrice   = 0
                 MarginOfError = 0
                 Protocol      = if ($Pool_SSL) {"ssl"} else {"stratum+tcp"}
-                Host          = "$($Pool_Stratum.host).suprnova.cc"
+                Host          = $Pool_Stratum
                 Port          = if ($Port.CPU) {$Port.CPU} else {$Port}
                 Ports         = if ($Port.CPU) {$Port} else {$null}
                 User          = "$($Wallets.$Pool_Currency).{workername:$Worker}"
                 Pass          = "x"
-                Region        = $Pool_RegionsTable[$Pool_Stratum.region]
+                Region        = $Pool_RegionsTable[$Pool_Region]
                 SSL           = $Pool_SSL
                 Updated       = (Get-Date).ToUniversalTime()
                 PoolFee       = $Pool_Fee
                 Workers       = $Pool_Workers
                 Hashrate      = $Pool_Hashrate
                 DataWindow    = $DataWindow
+                TSL           = $Pool_TSL
                 WTM           = $true
                 EthMode       = $Pool_EthProxy
                 Name          = $Name

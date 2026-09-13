@@ -26,6 +26,9 @@ if ($IsLinux) {
 
 $Commands = [PSCustomObject[]]@(
     [PSCustomObject]@{MainAlgorithm = "heavyhash";                 Vendor = @("AMD","INTEL","NVIDIA"); Params = ""; ExtendInterval = 2; FaultTolerance = 0.4} #Heavyhash/OBTC
+    #[PSCustomObject]@{MainAlgorithm = "phihash";      DAG = $true; Vendor = @("AMD","INTEL","NVIDIA"); Params = ""; ExtendInterval = 3; MinMemGB = 4} #PhiHash/PHI
+    [PSCustomObject]@{MainAlgorithm = "progpow-veil"; DAG = $true; Vendor = @("AMD","INTEL","NVIDIA"); Params = ""; ExtendInterval = 3; DevFee = 0.75} #ProgPowVeil
+    [PSCustomObject]@{MainAlgorithm = "vprogpow";     DAG = $true; Vendor = @("AMD","INTEL","NVIDIA"); Params = ""; ExtendInterval = 3; ExcludePoolName = "Beepool"} #vProgPoW
 )
 
 # $Name = Get-Item $MyInvocation.MyCommand.Path | Select-Object -ExpandProperty BaseName
@@ -66,7 +69,7 @@ foreach ($Miner_Vendor in @("AMD","INTEL","NVIDIA")) {
 
             $Algorithm_Norm_0 = Get-Algorithm $_.MainAlgorithm
 
-		    foreach($Algorithm_Norm in @($Algorithm_Norm_0,"$($Algorithm_Norm_0)-$($Miner_Model)","$($Algorithm_Norm_0)-GPU")) {
+		    foreach($Algorithm_Norm in @(Get-PoolAlgorithmKeys -Pools $Pools -Algorithm $Algorithm_Norm_0 -Model $Miner_Model -ExcludePoolName "$($_.ExcludePoolName)" -CoinSymbols @($_.CoinSymbols))) {
                 if (-not $Pools.$Algorithm_Norm.Host) {continue}
 
                 $QhashParams = ""
@@ -133,8 +136,6 @@ foreach ($Miner_Vendor in @("AMD","INTEL","NVIDIA")) {
                         BaseAlgorithm  = $Algorithm_Norm_0
                         Benchmarked    = $Global:StatsCache."$($Miner_Name)_$($Algorithm_Norm_0)_HashRate".Benchmarked
                         LogFile        = $Global:StatsCache."$($Miner_Name)_$($Algorithm_Norm_0)_HashRate".LogFile
-                        ListDevices    = "--print-devices"
-                        ListPlatforms  = "--print-platforms"
                         ExcludePoolName = $_.ExcludePoolName
 				    }
 			    }

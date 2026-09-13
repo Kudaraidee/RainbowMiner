@@ -21,6 +21,9 @@ if ($IsLinux -and (Test-Path ".\DotNet\Bin")) {
 
 Initialize-Session -NoDLLs
 
+# the job process runs without Start-Core: Get-MinersContent (custom miners) reads $Session.ConfigFiles
+$Session.ConfigFiles = $ConfigFiles
+
 $DownloadsCleanup = $true
 $MinersConfigCleanup = $true
 $PoolsConfigCleanup = $true
@@ -1935,6 +1938,19 @@ try {
         if ($ConfigActual.ShowRemoteMachines -eq "0") {
             $ConfigActual.ShowRemoteMachines = "`$ShowRemoteMachines";
             $Changes++;
+        }
+        if ($Changes) {
+            $ConfigActual | ConvertTo-Json -Depth 10 | Set-Content $ConfigFile -Encoding UTF8
+            $ChangesTotal += $Changes
+        }
+    }
+
+    if ($Version -le (Get-Version "5.0.2.8")) {
+        $Changes = 0
+        $ConfigActual = Get-Content "$ConfigFile" -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        if ($ConfigActual.ServerConfigName -ne "`$ServerConfigName" -and (Get-ConfigArray $ConfigActual.ServerConfigName) -inotcontains "customminers") {
+            $ConfigActual | Add-Member ServerConfigName "$((@(Get-ConfigArray $ConfigActual.ServerConfigName | Select-Object) + "customminers") -join ',')" -Force
+            $Changes++
         }
         if ($Changes) {
             $ConfigActual | ConvertTo-Json -Depth 10 | Set-Content $ConfigFile -Encoding UTF8

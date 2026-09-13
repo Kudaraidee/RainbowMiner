@@ -1,4 +1,148 @@
-﻿function Start-SubProcess {
+﻿# Persistent runspace pool for the Windows background miner monitors: reusing
+# pooled runspaces caps the process-wide TypeTable count - one-runspace-per-start
+# jobs leaked dead TypeTables via the engine's binder call-site caches - and
+# needs no ThreadJob module (Windows PowerShell 5.1 ships without it)
+$Script:MinerRSPool   = $null
+$Script:MinerRSScript = $null
+$Script:MinerRSCount  = 0
+# monitors whose pipeline ignored the stop request: parked here and disposed
+# once they end, instead of blocking the core loop (see Stop-MinerJobRS)
+$Script:MinerRSAbandoned = [System.Collections.Generic.List[object]]::new()
+
+function Initialize-MinerRunspacePool {
+    Clear-MinerJobAbandoned
+    if ($Script:MinerRSPool -and $Script:MinerRSPool.RunspacePoolStateInfo.State -ne "Opened") {
+        try {$Script:MinerRSPool.Dispose()} catch {}
+        $Script:MinerRSPool = $null
+    }
+    if (-not $Script:MinerRSPool) {
+        $MaxRS = 0
+        if ("$($env:RBM_MINERPOOL_MAXTHREADS)" -match "^\d+$") {$MaxRS = [int]$env:RBM_MINERPOOL_MAXTHREADS}
+        if ($MaxRS -lt 1) {$MaxRS = [Math]::Max(8, ($Global:GlobalCachedDevices | Measure-Object).Count + 2)}
+        # the (int,int) overload uses a default host on purpose: passing $Host
+        # would mirror every Write-Host of the process into the pipelines'
+        # information buffers (see Clear-APIServerStreams in API.psm1)
+        $Script:MinerRSPool = [RunspaceFactory]::CreateRunspacePool(1, $MaxRS)
+        # idle runspaces above the minimum are closed after 15 minutes by
+        # default; the replacement opened by the next miner start leaves the
+        # old TypeTable behind, pinned by the binder call-site rule caches
+        # (memdump I, 2026-09-08). Keep them: an idle default runspace costs
+        # about 1 MB, the timer accepts at most 49 days
+        $Script:MinerRSPool.CleanupInterval = [TimeSpan]::FromDays(30)
+        $Script:MinerRSPool.Open()
+        Write-Log "Created miner runspace pool with max $($MaxRS) runspaces"
+    }
+    if (-not $Script:MinerRSScript) {
+        $Script:MinerRSScript = [System.IO.File]::ReadAllText((Join-Path (Split-Path $PSScriptRoot) "Scripts\StartInBackground.ps1"))
+    }
+}
+
+function Stop-MinerRunspacePool {
+    Clear-MinerJobAbandoned
+    if ($Script:MinerRSPool) {
+        # Close() waits for every pipeline in the pool: a monitor that is still
+        # blocked must not hold up the shutdown, so close asynchronously with a
+        # bounded grace period and leave the pool behind otherwise
+        try {
+            $CloseHandle = $Script:MinerRSPool.BeginClose($null, $null)
+            $StopWatch = [System.Diagnostics.Stopwatch]::StartNew()
+            while (-not $CloseHandle.IsCompleted -and $StopWatch.Elapsed.TotalSeconds -lt 10) {Start-Sleep -Milliseconds 250}
+            if ($CloseHandle.IsCompleted) {
+                try {$Script:MinerRSPool.EndClose($CloseHandle)} catch {}
+                try {$Script:MinerRSPool.Dispose()} catch {}
+            } else {
+                Write-Log -Level Warn "Miner runspace pool did not close within 10 seconds - left behind"
+            }
+        } catch {}
+        $Script:MinerRSPool = $null
+        $Script:MinerRSScript = $null
+    }
+}
+
+function Clear-MinerJobAbandoned {
+    if ($Script:MinerRSAbandoned.Count -gt 0) {
+        $Ended = @($Script:MinerRSAbandoned | Where-Object {-not $_.PowerShell -or "$($_.PowerShell.InvocationStateInfo.State)" -notin @("Running","Stopping")})
+        foreach ($XJob in $Ended) {
+            try {if ($XJob.Handle -and $XJob.Handle.IsCompleted) {$XJob.PowerShell.EndInvoke($XJob.Handle) > $null}} catch {}
+            Remove-MinerJobRS $XJob
+            [void]$Script:MinerRSAbandoned.Remove($XJob)
+            Write-Log "$($XJob.Title): abandoned background monitor has ended and was disposed"
+        }
+    }
+}
+
+function Read-MinerJobOutput {
+    [CmdletBinding()]
+    param($MJob)
+    if ($MJob -ne $null) {
+        if ($MJob -is [System.Management.Automation.Job]) {
+            if ($MJob.HasMoreData) {$MJob | Receive-Job}
+        } elseif ($MJob.Output -and $MJob.Output.Count -gt 0) {
+            $MJob.Output.ReadAll()
+        }
+    }
+}
+
+function Stop-MinerJobRS {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        $XJob,
+        [Parameter(Mandatory = $false)]
+        [String]$Title = "Process"
+    )
+    if ($XJob -eq $null) {return}
+    $Abandon = $false
+    try {
+        if ($XJob.Handle -and -not $XJob.Handle.IsCompleted) {
+            # the miner PIDs are already dead at this point, so the monitor
+            # pipeline finishes on its own within a few seconds
+            $StopWatch = [System.Diagnostics.Stopwatch]::StartNew()
+            while (-not $XJob.Handle.IsCompleted -and $StopWatch.Elapsed.TotalSeconds -lt 10) {Start-Sleep -Milliseconds 250}
+        }
+        if ($XJob.PowerShell) {
+            if ($XJob.Handle -and $XJob.Handle.IsCompleted) {
+                try {$XJob.PowerShell.EndInvoke($XJob.Handle) > $null} catch {}
+            } else {
+                # never the synchronous Stop() here: it returns only once the
+                # pipeline thread reaches a stop point, and a monitor stuck in
+                # a native wait would freeze the core loop with it
+                Write-Log -Level Warn "$($Title): background monitor did not finish in time - stopping pipeline"
+                try {$XJob.PowerShell.BeginStop($null, $null) > $null} catch {}
+                $StopWatch = [System.Diagnostics.Stopwatch]::StartNew()
+                while ("$($XJob.PowerShell.InvocationStateInfo.State)" -in @("Running","Stopping") -and $StopWatch.Elapsed.TotalSeconds -lt 5) {Start-Sleep -Milliseconds 250}
+                if ("$($XJob.PowerShell.InvocationStateInfo.State)" -in @("Running","Stopping")) {$Abandon = $true}
+            }
+            if (-not $Abandon -and $XJob.PowerShell.InvocationStateInfo.State -eq "Failed") {
+                Write-Log -Level Warn "$($Title): background monitor failed: $($XJob.PowerShell.InvocationStateInfo.Reason.Message)"
+            }
+        }
+    } catch {}
+    if ($Abandon) {
+        # Dispose() would call Stop() synchronously: park the record instead,
+        # Clear-MinerJobAbandoned disposes it once the pipeline has ended
+        Write-Log -Level Warn "$($Title): background monitor ignored the stop request - abandoned, its pooled runspace stays blocked until it ends"
+        $XJob | Add-Member -MemberType NoteProperty -Name Title -Value $Title -Force
+        [void]$Script:MinerRSAbandoned.Add($XJob)
+        return
+    }
+    Remove-MinerJobRS $XJob
+}
+
+function Remove-MinerJobRS {
+    [CmdletBinding()]
+    param($XJob)
+    try {if ($XJob.Output) {if ($XJob.Output.Count) {$XJob.Output.ReadAll() > $null}; $XJob.Output.Dispose()}} catch {}
+    try {if ($XJob.Input) {$XJob.Input.Dispose()}} catch {}
+    try {if ($XJob.PowerShell) {$XJob.PowerShell.Dispose()}} catch {}
+    $XJob.PowerShell = $null
+    $XJob.Handle = $null
+    $XJob.Output = $null
+    $XJob.Input = $null
+    $XJob.Comm = $null
+}
+
+function Start-SubProcess {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
@@ -77,37 +221,98 @@ function Start-SubProcessInBackground {
         [Switch]$Quiet = $false
     )
 
-    [int[]]$Running = @()
-    Get-SubProcessRunningIds $FilePath | Foreach-Object {$Running += $_}
+    $Running = [System.Collections.Generic.List[int]]::new()
+    if ($MultiProcess -gt 0) {
+        # only the CIM-based discovery of additional PIDs needs the pre-start
+        # snapshot; the main PID is handed back by the monitor itself
+        Get-SubProcessRunningIds $FilePath | Where-Object {$_} | Foreach-Object {[void]$Running.Add([int]$_)}
+    }
 
-    if ($ArgumentList) {
-        $ArgumentListToBlock = $ArgumentList
-        ([regex]"\s-+[\w\-_]+[\s=]+([^'`"][^\s]*,[^\s]+)").Matches(" $ArgumentListToBlock") | Foreach-Object {$ArgumentListToBlock=$ArgumentListToBlock -replace [regex]::Escape($_.Groups[1].Value),"'$($_.Groups[1].Value -replace "'","``'")'"}
-        ([regex]"\s-+[\w\-_]+[\s=]+([\[][^\s]+)").Matches(" $ArgumentListToBlock") | Foreach-Object {$ArgumentListToBlock=$ArgumentListToBlock -replace [regex]::Escape($_.Groups[1].Value),"'$($_.Groups[1].Value -replace "'","``'")'"}
-        if ($ArgumentList -ne $ArgumentListToBlock) {
-            Write-Log "Start-SubProcessInBackground argumentlist: $($ArgumentListToBlock)"
-            $ArgumentList = $ArgumentListToBlock
+    Initialize-MinerRunspacePool
+
+    $Script:MinerRSCount++
+    $Comm   = [hashtable]::Synchronized(@{})
+    $InCol  = [System.Management.Automation.PSDataCollection[psobject]]::new()
+    $OutCol = [System.Management.Automation.PSDataCollection[psobject]]::new()
+
+    $PS = [PowerShell]::Create()
+    $PS.RunspacePool = $Script:MinerRSPool
+    [void]$PS.AddScript($Script:MinerRSScript, $true).AddParameters(@{
+        ControllerProcessID = $PID
+        WorkingDirectory    = $WorkingDirectory
+        FilePath            = $FilePath
+        ArgumentList        = $ArgumentList
+        LogPath             = $LogPath
+        EnvVars             = $EnvVars
+        Priority            = $Priority
+        CurrentPwd          = "$PWD"
+        Comm                = $Comm
+        CPUAffinity         = $CPUAffinity
+    })
+    $Handle = $PS.BeginInvoke($InCol, $OutCol)
+
+    $XJob = [PSCustomObject]@{
+        PowerShell  = $PS
+        Handle      = $Handle
+        Output      = $OutCol
+        Input       = $InCol
+        Comm        = $Comm
+        StartTime   = (Get-Date)
+        RunspaceJob = $true
+    }
+    # duck-typed job facade: MinerAPIs reads State/HasMoreData/PSBeginTime/
+    # PSEndTime off real jobs on the console/screen/tmux paths, so the pooled
+    # record answers to the same member names
+    $XJob | Add-Member -MemberType ScriptProperty -Name State -Value {
+        if ($this.PowerShell -eq $null) {"Completed"}
+        elseif ("$($this.PowerShell.InvocationStateInfo.State)" -in @("Running","Stopping")) {"Running"}
+        elseif ("$($this.PowerShell.InvocationStateInfo.State)" -eq "Failed") {"Failed"}
+        elseif ("$($this.PowerShell.InvocationStateInfo.State)" -eq "NotStarted") {"NotStarted"}
+        else {"Completed"}
+    }
+    $XJob | Add-Member -MemberType ScriptProperty -Name HasMoreData -Value {
+        [bool]($this.Output -and $this.Output.Count -gt 0)
+    }
+    $XJob | Add-Member -MemberType ScriptProperty -Name PSBeginTime -Value {$this.StartTime}
+    $XJob | Add-Member -MemberType ScriptProperty -Name PSEndTime -Value {
+        if ($this.Comm -and $this.Comm.ContainsKey("ExitTime")) {$this.Comm["ExitTime"]}
+        elseif ($this.Handle -and $this.Handle.IsCompleted) {Get-Date}
+        else {$null}
+    }
+
+    $StopWatch = [System.Diagnostics.Stopwatch]::StartNew()
+    while (-not $Comm.ContainsKey("ProcessId") -and -not $Comm.ContainsKey("StartFailed") -and -not $Handle.IsCompleted -and $StopWatch.Elapsed.TotalSeconds -lt 10) {
+        Start-Sleep -Milliseconds 50
+    }
+
+    $ProcessIds = [System.Collections.Generic.List[int]]::new()
+    if ($Comm.ContainsKey("StartFailed")) {
+        Write-Log -Level Warn "Failed to launch $($FilePath): $($Comm["StartFailed"])"
+    } elseif ($MultiProcess -gt 0) {
+        Get-SubProcessIds -FilePath $FilePath -ArgumentList $ArgumentList -MultiProcess $MultiProcess -Running $Running -Executables $Executables | Where-Object {$_} | Foreach-Object {[void]$ProcessIds.Add([int]$_)}
+        if ($Comm.ContainsKey("ProcessId") -and -not $ProcessIds.Contains([int]$Comm["ProcessId"])) {[void]$ProcessIds.Add([int]$Comm["ProcessId"])}
+    } elseif ($Comm.ContainsKey("ProcessId")) {
+        [void]$ProcessIds.Add([int]$Comm["ProcessId"])
+    } else {
+        if ("$($PS.InvocationStateInfo.State)" -eq "NotStarted") {
+            Write-Log -Level Warn "Miner runspace pool exhausted - process start for $($FilePath) is queued (increase RBM_MINERPOOL_MAXTHREADS)"
         }
+        Get-SubProcessIds -FilePath $FilePath -ArgumentList $ArgumentList -MultiProcess $MultiProcess -Running $Running -Executables $Executables | Where-Object {$_} | Foreach-Object {[void]$ProcessIds.Add([int]$_)}
     }
 
-    $Job = Start-ThreadJob -FilePath .\Scripts\StartInBackground.ps1 -ArgumentList $PID, $WorkingDirectory, $FilePath, $ArgumentList, $LogPath, $EnvVars, $Priority, $PWD
-
-    [int[]]$ProcessIds = @()
-    
-    if ($Job) {
-        Get-SubProcessIds -FilePath $FilePath -ArgumentList $ArgumentList -MultiProcess $MultiProcess -Running $Running -Executables $Executables | Foreach-Object {$ProcessIds += $_}
-    }
-    
-    if ($Priority -lt 10) {
+    # the monitor enforces priority and affinity through the job object for
+    # the whole process tree (JobLimits 0); the per-PID pass only remains for
+    # a miner outside the job guard or a partially rejected limit
+    if ($Priority -lt 10 -and -not ($Comm.ContainsKey("JobLimits") -and $Comm["JobLimits"] -eq 0)) {
         Set-SubProcessPriority $ProcessIds -Priority $Priority -CPUAffinity $CPUAffinity -Quiet:$Quiet
     }
 
     [PSCustomObject]@{
         ScreenName = ""
         ScreenCmd  = ""
-        Name       = $Job.Name
+        Name       = "MinerRS$($Script:MinerRSCount)"
         WorkingDir = $WorkingDirectory
-        XJob       = $Job
+        XJob       = $XJob
         OwnWindow  = $false
         ProcessId  = [int[]]@($ProcessIds | Where-Object {$_ -gt 0})
     }
@@ -143,8 +348,8 @@ function Start-SubProcessInConsole {
         [Switch]$Quiet = $false
     )
 
-    [int[]]$Running = @()
-    Get-SubProcessRunningIds $FilePath | Foreach-Object {$Running += $_}
+    $Running = [System.Collections.Generic.List[int]]::new()
+    Get-SubProcessRunningIds $FilePath | Where-Object {$_} | Foreach-Object {[void]$Running.Add([int]$_)}
 
     $LDExp = ""
     $LinuxDisplay = ""
@@ -152,7 +357,7 @@ function Start-SubProcessInConsole {
     if ($IsLinux) {
         $LDExp = if (Test-Path "/opt/rainbowminer/lib") {"/opt/rainbowminer/lib"} else {(Resolve-Path ".\IncludesLinux\lib")}
         $LinuxDisplay = "$(if ($Session.Config.EnableLinuxHeadless) {$Session.Config.LinuxDisplay})"
-        if ($Session.Config.EnableLinuxMinerNiceness) {
+        if ($Session.Config.EnableLinuxMinerNiceness -and "$($Session.Config.LinuxMinerNiceness)" -match "^-?\d+$") {
             $LinuxNiceness = "$($Session.Config.LinuxMinerNiceness)"
         }
         $Executables | Foreach-Object {
@@ -169,13 +374,14 @@ function Start-SubProcessInConsole {
     do {Start-Sleep 1; $JobOutput = Receive-Job $Job;$cnt--}
     while ($JobOutput -eq $null -and $cnt -gt 0)
 
-    [int[]]$ProcessIds = @()
-    
+    $ProcessIds = [System.Collections.Generic.List[int]]::new()
     if ($JobOutput) {
-        Get-SubProcessIds -FilePath $FilePath -ArgumentList $ArgumentList -MultiProcess $MultiProcess -Running $Running -Executables $Executables | Foreach-Object {$ProcessIds += $_}
-     }
+        Get-SubProcessIds -FilePath $FilePath -ArgumentList $ArgumentList -MultiProcess $MultiProcess -Running $Running -Executables $Executables | Where-Object {$_} | Foreach-Object {[void]$ProcessIds.Add([int]$_)}
 
-    if (-not $ProcessIds.Count -and $JobOutput.ProcessId) {$ProcessIds += $JobOutput.ProcessId}
+        if (-not $ProcessIds.Count -and $JobOutput.ProcessId) {
+            [void]$ProcessIds.Add([int]$JobOutput.ProcessId)
+        }
+    }
 
     if ($Priority -lt 10) {
         Set-SubProcessPriority $ProcessIds -Priority $Priority -CPUAffinity $CPUAffinity -Quiet:$Quiet
@@ -310,23 +516,32 @@ function Start-SubProcessInScreen {
 
     $EnvVars | Where-Object {$_ -match "^(\S*?)\s*=\s*(.*)$"} | Foreach-Object {$StuffEnv[$matches[1]]=$matches[2]}
 
+    # Extract extra LD_LIBRARY_PATH paths before the export loop, so they don't get exported standalone
+    $ExtraLDPath = if ($StuffEnv.Contains("LD_LIBRARY_PATH")) { $StuffEnv["LD_LIBRARY_PATH"]; $StuffEnv.Remove("LD_LIBRARY_PATH") }
+
     $StuffEnv.GetEnumerator() | Foreach-Object {
         [void]$Stuff.Add("export $($_.Name)=$($_.Value)")
     }
 
     if ($SetLDLIBRARYPATH) {
-        [void]$Stuff.Add("export LD_LIBRARY_PATH=./:$(if (Test-Path "/opt/rainbowminer/lib") {"/opt/rainbowminer/lib"} else {(Resolve-Path ".\IncludesLinux\lib")})")
+        $BaseLDPath = "./:$(if (Test-Path "/opt/rainbowminer/lib") {"/opt/rainbowminer/lib"} else {(Resolve-Path ".\IncludesLinux\lib")})"
+        $FullLDPath = if ($ExtraLDPath) {"$BaseLDPath`:$ExtraLDPath"} else {$BaseLDPath}
+        [void]$Stuff.Add("export LD_LIBRARY_PATH=$FullLDPath")
+    } elseif ($ExtraLDPath) {
+        [void]$Stuff.Add("export LD_LIBRARY_PATH=$ExtraLDPath")
     }
 
     [System.Collections.Generic.List[string]]$Test  = @()
     $Stuff | Foreach-Object {[void]$Test.Add($_)}
 
-    $nice = "$(if ($Session.Config.EnableLinuxMinerNiceness) {"nice -n $($Session.Config.LinuxMinerNiceness) "})"
+    # emit niceness only for a valid integer - an empty expansion makes nice/start-stop-daemon swallow the next token as its value
+    $Niceness = if ($Session.Config.EnableLinuxMinerNiceness -and "$($Session.Config.LinuxMinerNiceness)" -match "^-?\d+$") {[int]$Session.Config.LinuxMinerNiceness}
+    $nice = if ($Niceness -ne $null) {"nice -n $Niceness "} else {""}
     [void]$Test.Add("$nice$FilePath $TestArgumentList")
 
     if ($StartStopDaemon) {
-        $nice = "$(if ($Session.Config.EnableLinuxMinerNiceness) {"--nicelevel $($Session.Config.LinuxMinerNiceness) "})"
-        [void]$Stuff.Add("start-stop-daemon --start --make-pidfile --chdir '$WorkingDirectory' --pidfile '$PIDPath' $($nice)--exec '$FilePath' -- $ArgumentList")
+        # --exec directly after --start, so no preceding option can swallow it
+        [void]$Stuff.Add("start-stop-daemon --start --exec '$FilePath' --make-pidfile --chdir '$WorkingDirectory' --pidfile '$PIDPath' $(if ($Niceness -ne $null) {"--nicelevel $Niceness "})-- $ArgumentList")
     } else {
         [void]$Stuff.Add("$nice$FilePath $ArgumentList")
     }
@@ -392,17 +607,14 @@ function Start-SubProcessInScreen {
 
     $JobOutput.StartLog | Where-Object {$_} | Foreach-Object {Write-Log "$_"}
 
-    [int[]]$ProcessIds = @()
-    
+    $ProcessIds = [System.Collections.Generic.List[int]]::new()
     if ($JobOutput.ProcessId) {
-        $ProcessIds += $JobOutput.ProcessId
+        [void]$ProcessIds.Add([int]$JobOutput.ProcessId)
         if ($MultiProcess) {
-            if (-not $Executables) {
-                $Executables = @(Split-Path $FilePath -Leaf)
-            }
-            Get-SubProcessIds -FilePath $FilePath -ArgumentList $ArgumentList -MultiProcess $MultiProcess -Running $ProcessIds -Executables $Executables | Foreach-Object {
-                if ($_ -notin $ProcessIds) {
-                    $ProcessIds += $_
+            if (-not $Executables) { $Executables = @(Split-Path $FilePath -Leaf) }
+            Get-SubProcessIds -FilePath $FilePath -ArgumentList $ArgumentList -MultiProcess $MultiProcess -Running $JobOutput.ProcessId -Executables $Executables | Where-Object {$_} | Foreach-Object {
+                if (-not $ProcessIds.Contains([int]$_)) {
+                    [void]$ProcessIds.Add([int]$_)
                 }
             }
         }
@@ -524,23 +736,32 @@ function Start-SubProcessInTmux {
 
     $EnvVars | Where-Object {$_ -match "^(\S*?)\s*=\s*(.*)$"} | Foreach-Object {$StuffEnv[$matches[1]]=$matches[2]}
 
+    # Extract extra LD_LIBRARY_PATH paths before the export loop, so they don't get exported standalone
+    $ExtraLDPath = if ($StuffEnv.Contains("LD_LIBRARY_PATH")) { $StuffEnv["LD_LIBRARY_PATH"]; $StuffEnv.Remove("LD_LIBRARY_PATH") }
+
     $StuffEnv.GetEnumerator() | Foreach-Object {
         [void]$Stuff.Add("export $($_.Name)=$($_.Value)")
     }
 
     if ($SetLDLIBRARYPATH) {
-        [void]$Stuff.Add("export LD_LIBRARY_PATH=./:$(if (Test-Path "/opt/rainbowminer/lib") {"/opt/rainbowminer/lib"} else {(Resolve-Path ".\IncludesLinux\lib")})")
+        $BaseLDPath = "./:$(if (Test-Path "/opt/rainbowminer/lib") {"/opt/rainbowminer/lib"} else {(Resolve-Path ".\IncludesLinux\lib")})"
+        $FullLDPath = if ($ExtraLDPath) {"$BaseLDPath`:$ExtraLDPath"} else {$BaseLDPath}
+        [void]$Stuff.Add("export LD_LIBRARY_PATH=$FullLDPath")
+    } elseif ($ExtraLDPath) {
+        [void]$Stuff.Add("export LD_LIBRARY_PATH=$ExtraLDPath")
     }
 
     [System.Collections.Generic.List[string]]$Test  = @()
     $Stuff | Foreach-Object {[void]$Test.Add($_)}
 
-    $nice = "$(if ($Session.Config.EnableLinuxMinerNiceness) {"nice -n $($Session.Config.LinuxMinerNiceness) "})"
+    # emit niceness only for a valid integer - an empty expansion makes nice/start-stop-daemon swallow the next token as its value
+    $Niceness = if ($Session.Config.EnableLinuxMinerNiceness -and "$($Session.Config.LinuxMinerNiceness)" -match "^-?\d+$") {[int]$Session.Config.LinuxMinerNiceness}
+    $nice = if ($Niceness -ne $null) {"nice -n $Niceness "} else {""}
     [void]$Test.Add("$nice$FilePath $TestArgumentList")
 
     if ($StartStopDaemon) {
-        $nice = "$(if ($Session.Config.EnableLinuxMinerNiceness) {"--nicelevel $($Session.Config.LinuxMinerNiceness) "})"
-        [void]$Stuff.Add("start-stop-daemon --start --make-pidfile --chdir '$WorkingDirectory' --pidfile '$PIDPath' $($nice)--exec '$FilePath' -- $ArgumentList")
+        # --exec directly after --start, so no preceding option can swallow it
+        [void]$Stuff.Add("start-stop-daemon --start --exec '$FilePath' --make-pidfile --chdir '$WorkingDirectory' --pidfile '$PIDPath' $(if ($Niceness -ne $null) {"--nicelevel $Niceness "})-- $ArgumentList")
     } else {
         [void]$Stuff.Add("$nice$FilePath $ArgumentList")
     }
@@ -605,17 +826,14 @@ function Start-SubProcessInTmux {
 
     $JobOutput.StartLog | Where-Object {$_} | Foreach-Object {Write-Log "$_"}
 
-    [int[]]$ProcessIds = @()
-    
+    $ProcessIds = [System.Collections.Generic.List[int]]::new()
     if ($JobOutput.ProcessId) {
-        $ProcessIds += $JobOutput.ProcessId
+        [void]$ProcessIds.Add([int]$JobOutput.ProcessId)
         if ($MultiProcess) {
-            if (-not $Executables) {
-                $Executables = @(Split-Path $FilePath -Leaf)
-            }
-            Get-SubProcessIds -FilePath $FilePath -ArgumentList $ArgumentList -MultiProcess $MultiProcess -Running $ProcessIds -Executables $Executables | Foreach-Object {
-                if ($_ -notin $ProcessIds) {
-                    $ProcessIds += $_
+            if (-not $Executables) { $Executables = @(Split-Path $FilePath -Leaf) }
+            Get-SubProcessIds -FilePath $FilePath -ArgumentList $ArgumentList -MultiProcess $MultiProcess -Running $JobOutput.ProcessId -Executables $Executables | Where-Object {$_} | Foreach-Object {
+                if (-not $ProcessIds.Contains([int]$_)) {
+                    [void]$ProcessIds.Add([int]$_)
                 }
             }
         }
@@ -658,45 +876,42 @@ function Get-SubProcessIds {
         [int]$MultiProcess = 0
     )
 
-    $StopWatch = [System.Diagnostics.Stopwatch]::New()
+    $found = [System.Collections.Generic.List[int]]::new()
 
-    $StopWatch.Restart()
+    $runningSet = [System.Collections.Generic.HashSet[int]]::new()
+    foreach ($p in $Running) { [void]$runningSet.Add([int]$p) }
+
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
 
     if ($IsWindows) {
-
-        $WaitCount = 0
-        $ProcessFound = 0
         $ArgumentList = ("*$($ArgumentList.Replace("*","#!star!#").Replace("'","*").Replace('"',"*") -replace '([\[\]\?\`])','`$1')*" -replace "\*+","*").Replace("#!star!#",'`*')
         $FilePathOnly = "$(Split-Path -Path $FilePath)"
 
         do {
             Start-Sleep -Milliseconds 100
-            Get-CIMInstance CIM_Process | Where-Object {($_.ExecutablePath -ne $null -and ("$(Split-Path -Path $_.ExecutablePath)" -eq $FilePathOnly)) -and $_.CommandLine -like $ArgumentList -and $Running -inotcontains $_.ProcessId} | Foreach-Object {
-                $Running += $_.ProcessId
-                $ProcessFound++
-                $_.ProcessId
-                Write-Log "$($_.ProcessId) found for $FilePath"
+            Get-CIMInstance CIM_Process | Where-Object {($_.ExecutablePath -ne $null -and ("$(Split-Path -Path $_.ExecutablePath)" -eq $FilePathOnly)) -and $_.CommandLine -like $ArgumentList -and -not $runningSet.Contains([int]$_.ProcessId)} | Foreach-Object {
+                $p = [int]$_.ProcessId
+                [void]$runningSet.Add($p)
+                [void]$found.Add($p)
+                Write-Log "$p found for $FilePath"
             }
-            $WaitCount++
-        } until (($StopWatch.Elapsed.TotalSeconds -gt 10) -or ($ProcessFound -gt $MultiProcess))
+        } until (($sw.Elapsed.TotalSeconds -gt 10) -or ($found.Count -gt $MultiProcess))
 
     } elseif ($IsLinux) {
-
-        $WaitCount = 0
-        $ProcessFound = 0
-
         do {
             Start-Sleep -Milliseconds 100
-            Get-Process | Where-Object {$_.Name -in $Executables -and ($($_.Parent).Parent.Id -in $Running -or $($_.Parent).Id -in $Running)} | Foreach-Object {
-                $ProcessFound++
-                $_.Id
-                Write-Log "Success: got id $($_.Id) for $($_.Name) as child of $($($_.Parent).Parent.Name)"
+            Get-Process | Where-Object {$_.Name -in $Executables -and $_.Parent -and ($runningSet.Contains([int]$_.Parent.Id) -or ($_.Parent.Parent -and $runningSet.Contains([int]$_.Parent.Parent.Id)))} | Foreach-Object {
+                $p = [int]$_.Id
+                [void]$found.Add($p)
+                Write-Log "Success: got id $p for $($_.Name) as child of $($_.Parent.Parent.Name)"
             }
-            $WaitCount++
-        } until (($StopWatch.Elapsed.TotalSeconds -gt 10) -or ($ProcessFound -ge $MultiProcess))
+        } until (($sw.Elapsed.TotalSeconds -gt 10) -or ($found.Count -ge $MultiProcess))
     }
 
-    $StopWatch = $null
+    $sw.Stop()
+    $sw = $null
+
+    $found.ToArray()
 }
 
 function Set-SubProcessPriority {
@@ -745,15 +960,18 @@ function Stop-SubProcess {
         $Job.ProcessId | Select-Object -First 1 | Foreach-Object {
             if ($Process = Get-Process -Id $_ -ErrorAction Ignore) {
 
-                $StopWatch = [System.Diagnostics.Stopwatch]::New()
+                $sw = [System.Diagnostics.Stopwatch]::StartNew()
 
-                $StopWatch.Start()
-
-                $ToKill  = @()
-                $ToKill += $Process
+                $ToKill  = [System.Collections.ArrayList]::new()
+                [void]$ToKill.Add($Process)
 
                 if ($IsLinux) {
-                    $ToKill += Get-Process | Where-Object {$_.Parent.Id -eq $Process.Id -and $_.Name -eq $Process.Name}
+                    foreach ($p in Get-Process -Name $Process.Name -ErrorAction Ignore) {
+                        if ($p.Parent -and ($p.Parent.Id -eq $Process.Id)) {
+                            [void]$ToKill.Add($p)
+                        }
+                    }
+                    $p = $null
                 }
 
                 if ($ShutdownUrl -ne "") {
@@ -763,14 +981,19 @@ function Stop-SubProcess {
                     try {
                         $Response = Invoke-GetUrl $ShutdownUrl -Timeout 20 -ErrorAction Stop
 
-                        $StopWatch.Restart()
-                        while (($null -in $ToKill.HasExited -or $false -in $ToKill.HasExited) -and $StopWatch.Elapsed.TotalSeconds -le 20) {
-                            Start-Sleep -Milliseconds 500
+                        $sw.Restart()
+                        while ($sw.Elapsed.TotalSeconds -le 20) {
+                            $hx = $ToKill.HasExited
+                            if ($hx -contains $null -or $hx -contains $false) {
+                                Start-Sleep -Milliseconds 500
+                            } else {
+                                break
+                            }
                         }
-                        if ($null -in $ToKill.HasExited -or $false -in $ToKill.HasExited) {
+                        $hx = $ToKill.HasExited
+                        if ($hx -contains $null -or $hx -contains $false) {
                             Write-Log -Level Warn "$($Title) failed to close within 20 seconds via API $(if ($Name) {": $($Name)"})"
                         }
-                        $StopWatch.Restart()
                     }
                     catch {
                         Write-Log -Level Warn "Failed to shutdown process $($Title) via API$(if ($Name) {": $($Name)"})"
@@ -785,23 +1008,6 @@ function Stop-SubProcess {
                     #
 
                     $Shutdown_Title = "$($Title) PID $($Process.Id)$(if ($Name) {": $($Name)"})"
-
-                    #try {
-                    #    if (-not $Process.HasExited) {
-                    #        Write-Log "Send Ctrl+C to $($Shutdown_Title)"
-                    #        if (Send-CtrlC $Process.Id) {
-                    #            while (-not $Process.HasExited -and $StopWatch.Elapsed.TotalSeconds -le $WaitForExit) {
-                    #                Start-Sleep -Milliseconds 500
-                    #            }
-                    #            if (-not $Process.HasExited -and $WaitForExit -gt 0) {
-                    #                Write-Log -Level Warn "$($Title) failed to close within $($WaitForExit) seconds$(if ($Name) {": $($Name)"})"
-                    #            }
-                    #        }
-                    #    }
-                    #} catch {
-                    #    
-                    #    Write-Log -Level Warn "Problem closing $($Title) PID $($Process.Id): $($_.Exception.Message)"
-                    #}
 
                     try {
                         if ($Job.OwnWindow) {
@@ -825,7 +1031,8 @@ function Stop-SubProcess {
 
                     if ($Job.ScreenName) {
                         try {
-                            if ($null -in $ToKill.HasExited -or $false -in $ToKill.HasExited) {
+                            $hx = $ToKill.HasExited
+                            if ($hx -contains $null -or $hx -contains $false) {
                                 Write-Log "Send ^C to $($Title)'s screen $($Job.ScreenName)"
 
                                 $ArgumentList = if ($Job.ScreenCmd -eq "screen") {"-S $($Job.ScreenName) -X stuff `^C"} elseif ($Job.ScreenCmd -eq "tmux") {"send-keys -t $($Job.ScreenName) C-c"}
@@ -838,12 +1045,17 @@ function Stop-SubProcess {
                                     $Screen_Process.WaitForExit(5000) > $null
                                 }
 
-                                $StopWatch.Restart()
-                                while (($null -in $ToKill.HasExited -or $false -in $ToKill.HasExited) -and $StopWatch.Elapsed.TotalSeconds -le 10) {
-                                    Start-Sleep -Milliseconds 500
+                                $sw.Restart()
+                                while ($sw.Elapsed.TotalSeconds -le 10) {
+                                    $hx = $ToKill.HasExited
+                                    if ($hx -contains $null -or $hx -contains $false) {
+                                        Start-Sleep -Milliseconds 500
+                                    } else {
+                                        break
+                                    }
                                 }
 
-                                if ($null -in $ToKill.HasExited -or $false -in $ToKill.HasExited) {
+                                if ($hx -contains $null -or $hx -contains $false) {
                                     Write-Log -Level Warn "$($Title) failed to close within 10 seconds$(if ($Name) {": $($Name)"})"
                                 }
                             }
@@ -888,13 +1100,19 @@ function Stop-SubProcess {
                 # Wait for miner to shutdown
                 #
 
-                while (($null -in $ToKill.HasExited -or $false -in $ToKill.HasExited) -and $StopWatch.Elapsed.TotalSeconds -le $WaitForExit) {
-                    Write-Log "Wait for exit of $($Title) PID $($_) ($($StopWatch.Elapsed.TotalSeconds)s elapsed)$(if ($Name) {": $($Name)"})"
-                    Start-Sleep -Seconds 1
+                while ($sw.Elapsed.TotalSeconds -le $WaitForExit) {
+                    $hx = $ToKill.HasExited
+                    if ($hx -contains $null -or $hx -contains $false) {
+                        Write-Log "Wait for exit of $($Title) PID $($_) ($($sw.Elapsed.TotalSeconds)s elapsed)$(if ($Name) {": $($Name)"})"
+                        Start-Sleep -Seconds 1
+                    } else {
+                        break
+                    }
                 }
 
                 if ($WaitForExit -gt 0) {
-                    if ($null -in $ToKill.HasExited -or $false -in $ToKill.HasExited) {
+                    $hx = $ToKill.HasExited
+                    if ($hx -contains $null -or $hx -contains $false) {
                         Write-Log -Level Warn "Alas! $($Title) failed to close within $WaitForExit seconds$(if ($Name) {": $($Name)"}) - $(if ($Session.Config.EnableRestartComputer) {"REBOOTING COMPUTER NOW"} else {"PLEASE REBOOT COMPUTER!"})"
                         if ($Session.Config.EnableRestartComputer) {$Session.RestartComputer = $true}
                     } else {
@@ -902,6 +1120,9 @@ function Stop-SubProcess {
                         Start-Sleep -Seconds 1
                     }
                 }
+
+                $ToKill.Clear()
+                $ToKill = $null
             }
         }
     }
@@ -926,8 +1147,12 @@ function Stop-SubProcess {
     }
 
     if ($Job.XJob) {
-        if ($Job.XJob.HasMoreData) {Receive-Job $Job.XJob > $null}
-        Remove-Job $Job.XJob -Force -ErrorAction Ignore
+        if ($Job.XJob -is [System.Management.Automation.Job]) {
+            if ($Job.XJob.HasMoreData) {Receive-Job $Job.XJob > $null}
+            Remove-Job $Job.XJob -Force -ErrorAction Ignore
+        } else {
+            Stop-MinerJobRS -XJob $Job.XJob -Title $Title
+        }
         $Job.Name = $null
         $Job.XJob = $null
     }

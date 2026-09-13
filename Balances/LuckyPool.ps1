@@ -8,20 +8,22 @@ param(
 # $Name = Get-Item $MyInvocation.MyCommand.Path | Select-Object -ExpandProperty BaseName
 
 $Pools_Data = @(
-    [PSCustomObject]@{symbol = "CLC";   port = 5118; fee = 0.9; rpc = "clc";        user = "{wallet}{=diff}.{worker}"; pass="x"}
+    [PSCustomObject]@{symbol = "ALP";   port = 4260; fee = 0.9; rpc = "alp";        user = "{wallet}.{worker}";        pass="x"}
+    [PSCustomObject]@{symbol = "BTXCHAIN"; port = 8665; fee = 0.9; rpc = "btx";     user = "{wallet}";                 pass="x"}
     [PSCustomObject]@{symbol = "XCB";   port = 3118; fee = 0.9; rpc = "corecoin";   user = "{wallet}{=diff}.{worker}"; pass="x"}
-    [PSCustomObject]@{symbol = "XCC";   port = 4481; fee = 0.9; rpc = "cyberchain"; user = "{wallet}{=diff}.{worker}"; pass="x"}
-    [PSCustomObject]@{symbol = "LBRT";  port = 4118; fee = 0.9; rpc = "liberty";    user = "{wallet}{=diff}.{worker}"; pass="x"}
-    [PSCustomObject]@{symbol = "MCM";   port = 3336; fee = 0.9; rpc = "mochimo";    user = "{wallet}{=diff}.{worker}"; pass="x"}
-    [PSCustomObject]@{symbol = "NIR";   port = 3377; fee = 0.9; rpc = "nirmata";    user = "{wallet}.{worker}{.diff}"; pass="x"}
-    [PSCustomObject]@{symbol = "QUAI";  port = 3333; fee = 0.9; rpc = "quai";       user = "{wallet}{=diff}.{worker}"; pass="x"}
-    [PSCustomObject]@{symbol = "QTC";   port = 8611; fee = 0.9; rpc = "qubitcoin";  user = "{wallet}{=diff}.{worker}"; pass="x"}
-    [PSCustomObject]@{symbol = "R5";    port = 2118; fee = 0.9; rpc = "r5";         user = "{wallet}{=diff}.{worker}"; pass="x"}
+    [PSCustomObject]@{symbol = "CSD";   port = 8760; fee = 0.9; rpc = "csd";        user = "{wallet}.{worker}";        pass="x"}
+    [PSCustomObject]@{symbol = "EXFER"; port = 3335; fee = 0.9; rpc = "exfer";      user = "{wallet}.{worker}";        pass="LP01"}
+    [PSCustomObject]@{symbol = "MDS";   port = 8960; fee = 1.0; rpc = "midstate";   user = "{wallet}.{worker}";        pass="x"}
+    [PSCustomObject]@{symbol = "MCM";   port = 3338; fee = 0.9; rpc = "mochimo";    user = "{wallet}{=diff}.{worker}"; pass="x"}
+    [PSCustomObject]@{symbol = "OGG";   port = 8360; fee = 0.9; rpc = "ogg";        user = "{wallet}{=diff}.{worker}"; pass="x"}
+    [PSCustomObject]@{symbol = "PRL";   port = 3360; fee = 0.9; rpc = "pearl";      user = "{wallet}";                 pass="x"}
+    [PSCustomObject]@{symbol = "QTC";   port = 8610; fee = 0.9; rpc = "qtc";        user = "{wallet}{=diff}.{worker}"; pass="x"}
+    [PSCustomObject]@{symbol = "QUAN";  port = 5660; fee = 1.0; rpc = "quantus";    user = "{wallet}.{worker}";        pass="x"}
+    [PSCustomObject]@{symbol = "XTM";   port = 3110; fee = 0.9; rpc = "taric29";    user = "{wallet}{=diff}.{worker}"; pass="x"; algorithm = "Cuckaroo29"}
     [PSCustomObject]@{symbol = "XTM";   port = 9118; fee = 0.9; rpc = "tarirx";     user = "{wallet}{=diff}.{worker}"; pass="x"; algorithm = "RandomX"}
     [PSCustomObject]@{symbol = "XTM";   port = 6118; fee = 0.9; rpc = "tari";       user = "{wallet}{=diff}.{worker}"; pass="x"; algorithm = "SHA3x"}
-    [PSCustomObject]@{symbol = "XE";    port = 3381; fee = 0.9; rpc = "xechain";    user = "{wallet}{=diff}.{worker}"; pass="x"}
-    [PSCustomObject]@{symbol = "XEL";   port = 2666; fee = 0.9; rpc = "xelis";      user = "{wallet}{=diff}.{worker}"; pass="x"}
-    [PSCustomObject]@{symbol = "ZANO";  port = 8877; fee = 0.9; rpc = "zano";       user = "{wallet}.{worker}";        pass="{diff}"}
+    [PSCustomObject]@{symbol = "TSC";   port = 4160; fee = 3.0; rpc = "tensorcash"; user = "{wallet}.{worker}";        pass="x"}
+    [PSCustomObject]@{symbol = "ZANO";  port = 8877; fee = 0.9; rpc = "zano";       user = "{wallet}.{worker}";        pass="x{diff}"}
 )
 
 $Pools_Data | Where-Object {$Config.Pools.$Name.Wallets."$($_.symbol)" -and (-not $Config.ExcludeCoinsymbolBalances.Count -or $Config.ExcludeCoinsymbolBalances -notcontains "$($_.symbol)")} | Foreach-Object {
@@ -39,16 +41,22 @@ $Pools_Data | Where-Object {$Config.Pools.$Name.Wallets."$($_.symbol)" -and (-no
         if (-not $Request.stats -or -not $Divisor) {
             Write-Log -Level Info "Pool Balance API ($Name) for $($Pool_Currency) returned nothing. "
         } else {
-            $Pending = ($Request.blocks | Where-Object {$_ -match "^\d+?:\d+?:\d+?:\d+?:\d+?:(\d+?):"} | Foreach-Object {[int64]$Matches[1]} | Measure-Object -Sum).Sum / $Divisor
+            if ($Request.stats.balance -eq $null -and ($Request.stats.locked -ne $null -or $Request.stats.unlocked -ne $null)) {
+                $Balance = [Decimal]$Request.stats.unlocked / $Divisor
+                $Pending = [Decimal]$Request.stats.locked / $Divisor
+            } else {
+                $Balance = [Decimal]$Request.stats.balance / $Divisor
+                $Pending = ($Request.blocks | Where-Object {$_ -match "^\d+?:\d+?:\d+?:\d+?:\d+?:(\d+?):"} | Foreach-Object {[int64]$Matches[1]} | Measure-Object -Sum).Sum / $Divisor
+            }
 			$Payouts = @($i=0;$Request.payments | Where-Object {$_ -match "^(.+?):(\d+?):"} | Foreach-Object {[PSCustomObject]@{time=$Request.payments[$i+1];amount=[Decimal]$Matches[2] / $Divisor;txid=$Matches[1]};$i+=2})
             [PSCustomObject]@{
                 Caption     = "$($Name) ($Pool_Currency)"
 				BaseName    = $Name
                 Name        = $Name
                 Currency    = $Pool_Currency
-                Balance     = [Decimal]$Request.stats.balance / $Divisor
+                Balance     = [Decimal]$Balance
                 Pending     = [Decimal]$Pending
-                Total       = [Decimal]$Request.stats.balance / $Divisor + [Decimal]$Pending
+                Total       = [Decimal]$Balance + [Decimal]$Pending
                 Paid        = [Decimal]$Request.stats.paid / $Divisor
                 Payouts     = @(Get-BalancesPayouts $Payouts | Select-Object)
                 LastUpdated = (Get-Date).ToUniversalTime()

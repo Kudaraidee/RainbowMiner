@@ -24,6 +24,7 @@ param(
     [Bool]$EnableAutoCreate = $false,
     [Bool]$EnableAutoUpdate = $false,
     [Bool]$EnableAutoExtend = $false,
+    [Bool]$EnableAutoExtendDifficultyCheck = $false,
     [Bool]$EnableAutoPrice = $false,
     [Bool]$EnableAutoBenchmark = $false,
     [Bool]$EnableMinimumPrice = $false,
@@ -247,7 +248,7 @@ if ($AllRigs_Request) {
             $Session.MRRRentalTimestamp[$Worker1] = (Get-Date).ToUniversalTime()
             $RigInfo_CacheTime = 2 * $Session.Config.Interval
         } else {
-            $Valid_Rigs = @()
+            $Valid_Rigs = [System.Collections.ArrayList]::new()
 
             if ((Compare-Object $Devices_Benchmarking $Workers_Devices[$Worker1] -ExcludeDifferent -IncludeEqual | Measure-Object).Count) {
 
@@ -279,7 +280,7 @@ if ($AllRigs_Request) {
                             (Compare-Object $Devices_Rented $Workers_Devices[$Worker1] -ExcludeDifferent -IncludeEqual | Measure-Object).Count -or
                             ($DeviceAlgorithm.Count -and $DeviceAlgorithm -inotcontains $Pool_Algorithm_Norm) -or
                             ($DeviceExcludeAlgorithm.Count -and $DeviceExcludeAlgorithm -icontains $Pool_Algorithm_Norm)
-                            )) {$Valid_Rigs += $_.id}
+                            )) {[void]$Valid_Rigs.Add($_.id)}
                     }
                 } else {
                     Write-Log -Level Warn "$($Name): Wait $([Math]::Round(($PauseBetweenRentals_Seconds - $NotRentedSince_Seconds)/60,1)) minutes for $($Worker1) rigs to be re-enabled."
@@ -301,7 +302,7 @@ if ($AllRigs_Request) {
 
         $RigInfo_Request = Get-MiningRigInfo -id $Rigs_Ids -key $API_Key -secret $API_Secret -cachetime $RigInfo_CacheTime
         if (-not $RigInfo_Request) {
-            Write-Log -Level Warn "Pool API ($Name) rig $Worker1 info request has failed. "
+            Write-Log -Level Warn "Pool API ($Name) rig $Worker1 info request has failed. This is mostly a temporary problem with the $Name API and RainbowMiner will retry automatically. If the warning persists, clear the cache to force fresh data: press [E] in the console, click Clear cach[e] on the web console or call API endpoint /clearcache. "
             return
         }
 
@@ -359,6 +360,8 @@ if ($AllRigs_Request) {
                             UseHost=""
                             PoolOfflineTime = ""
                             PoolOfflineRetryTime = ""
+                            MinerName=""
+                            ExcludeMinerName=""
                         }
                         try {
                             $Rental_Options | ConvertTo-Json -Depth 10 | Set-Content ".\Config\mrr-$($Rental_Id).config.txt"
@@ -369,6 +372,22 @@ if ($AllRigs_Request) {
 
                     $Rental_PoolOfflineTime = if ($Rental_Options.PoolOfflineTime) {ConvertFrom-Time "$($Rental_Options.PoolOfflineTime)"} else {$PoolOfflineTime_Seconds}
                     $Rental_PoolOfflineRetryTime = if ($Rental_Options.PoolOfflineRetryTime) {ConvertFrom-Time "$($Rental_Options.PoolOfflineRetryTime)"} else {$PoolOfflineRetryTime_Seconds}
+
+                    if ($Rental_Options.MinerName) {
+                        if ($Rental_Options.MinerName -is [string]) {
+                            $Rental_MinerName  = @($Rental_Options.MinerName -replace "[^A-Z0-9,;]+" -split "[,;]+" | Where-Object {$_} | Select-Object)
+                        } else {
+                            $Rental_MinerName = $Rental_Options.MinerName
+                        }
+                    } else {$Rental_MinerName = $null}
+
+                    if ($Rental_Options.ExcludeMinerName) {
+                        if ($Rental_Options.ExcludeMinerName -is [string]) {
+                            $Rental_ExcludeMinerName  = @($Rental_Options.ExcludeMinerName -replace "[^A-Z0-9,;]+" -split "[,;]+" | Where-Object {$_} | Select-Object)
+                        } else {
+                            $Rental_ExcludeMinerName = $Rental_Options.ExcludeMinerName
+                        }
+                    } else {$Rental_ExcludeMinerName = $null}
 
                     $Rental_PoolIsOffline = $Rental_PoolStatus -eq "offline"
                     if ($Rental_PoolIsOffline -and $Rental_Miner) {
@@ -539,6 +558,41 @@ if ($AllRigs_Request) {
                                         $ExtendBy = [Math]::Min([double]$Rental_Result.length * $AutoExtendMaximumPercent_Value - $Rental_Extended + $Rental_ExtendedBonus,$ExtendBy)
                                     }
 
+                                    if ($EnableAutoExtendDifficultyCheck) {
+                                        try {
+                                            $Threads_Result = Invoke-MiningRigRentalRequest "/rig/$($Pool_RigId)/threads" $API_Key $API_Secret
+                                            $Pool_Diff = ($Threads_Result.threads | Select-Object -First 1).difficulty.share -as [double]
+                                            $Threads_Result = $null
+                                            if (-not $Pool_Diff -and $Rental_Miner) {
+                                                $Pool_Diff = [double]$Rental_Miner.GetDifficulty($Pool_Algorithm_Norm_With_Model)
+                                            }
+                                            if ($Pool_Diff) {
+                                                $DiffMessageTolerancyPercent_Value  = if ($Session.Config.MRRAlgorithms.$Pool_Algorithm_Norm.DiffMessageTolerancyPercent -ne $null -and $Session.Config.MRRAlgorithms.$Pool_Algorithm_Norm.DiffMessageTolerancyPercent -ne "") {$Session.Config.MRRAlgorithms.$Pool_Algorithm_Norm.DiffMessageTolerancyPercent}
+                                                                                      elseif ($MRRConfig.$Worker1.DiffMessageTolerancyPercent -ne $null -and $MRRConfig.$Worker1.DiffMessageTolerancyPercent -ne "") {$MRRConfig.$Worker1.DiffMessageTolerancyPercent}
+                                                                                      else {$DiffMessageTolerancyPercent}
+                                                $DiffMessageTolerancyPercent_Value  = [Double]("$($DiffMessageTolerancyPercent_Value)" -replace ",","." -replace "[^0-9\.]+") / 100
+
+                                                if ($Optimal_Difficulty.min -gt 0 -and $Optimal_Difficulty.max -gt 0) {
+                                                    $MinDiff_Rounded = if ($Optimal_Difficulty.min -gt 10) {[Math]::Round($Optimal_Difficulty.min,0)} else {$Optimal_Difficulty.min}
+                                                    $MaxDiff_Rounded = if ($Optimal_Difficulty.max -gt 10) {[Math]::Round($Optimal_Difficulty.max,0)} else {$Optimal_Difficulty.max}
+                                                    $CurrentDiff_Rounded = if ($Pool_Diff -ge 10) {[Math]::Round($Pool_Diff,0)} else {$Pool_Diff}
+
+                                                    $Bad_Diff_Msg = if ($Pool_Diff -lt (1 - $DiffMessageTolerancyPercent_Value)*$Optimal_Difficulty.min) {
+                                                                        "$($CurrentDiff_Rounded) < $($MinDiff_Rounded)"
+                                                                    } elseif ($Pool_Diff -gt (1 + $DiffMessageTolerancyPercent_Value)*$Optimal_Difficulty.max) {
+                                                                        "$($CurrentDiff_Rounded) > $($MaxDiff_Rounded)"
+                                                                    }
+                                                    if ($Bad_Diff_Msg) {
+                                                        $ExtendBy = 0
+                                                        Write-Log -Level Info "$($Name): No auto-extention due to renter pool difficulty $($Bad_Diff_Msg) for rental #$($_.rental_id) for $Pool_Algorithm_Norm on $Worker1"
+                                                    }
+                                                }
+                                            }
+                                        } catch {
+                                            Write-Log -Level Warn "$($Name): Unable to check difficulty for auto extend #$($_.rental_id): $($_.Exception.Message)"
+                                        }
+                                    }
+
                                     $ExtendBy = [Math]::Round($ExtendBy,2)
 
                                     if ($ExtendBy -ge (1/6)) {
@@ -680,9 +734,22 @@ if ($AllRigs_Request) {
                         }
                     }
 
-                    $Pool_FailOver = if ($Pool_AltRegions = Get-Region2 $Pool_RegionsTable."$($_.region)") {$Pool_AllHosts | Where-Object {$_.name -ne $Miner_Server} | Sort-Object -Descending {$ix = $Pool_AltRegions.IndexOf($Pool_RegionsTable."$($_.region)");[int]($ix -ge 0)*(100-$ix)},{$_.region -match "^$($Miner_Server.SubString(0,2))"},{100-$_.id} | Select-Object -First 2}
-                    if (-not $Pool_Failover) {$Pool_FailOver = @($Pool_AllHosts | Where-Object {$_.name -ne $Miner_Server -and $_.region -match "^us"} | Select-Object -First 1) + @($Pool_AllHosts | Where-Object {$_.name -ne $Miner_Server -and $_.region -match "^eu"} | Select-Object -First 1)}
-                    $Pool_FailOver += $Pool_AllHosts | Where-Object {$_.name -ne $Miner_Server -and $Pool_FailOver -notcontains $_} | Select-Object -First 1
+                    $Pool_FailOver = [System.Collections.ArrayList]::new()
+
+                    if ($Pool_AltRegions = Get-Region2 $Pool_RegionsTable."$($_.region)") {
+                        $Pool_AllHosts | Where-Object {$_.name -ne $Miner_Server} | Sort-Object -Descending {$ix = $Pool_AltRegions.IndexOf($Pool_RegionsTable."$($_.region)");[int]($ix -ge 0)*(100-$ix)},{$_.region -match "^$($Miner_Server.SubString(0,2))"},{100-$_.id} | Select-Object -First 2 | Foreach-Object {
+                            [void]$Pool_FailOver.Add($_)
+                        }
+                    }
+                    if (-not $Pool_Failover.Count) {
+                        @($Pool_AllHosts | Where-Object {$_.name -ne $Miner_Server -and $_.region -match "^us"} | Select-Object -First 1) + @($Pool_AllHosts | Where-Object {$_.name -ne $Miner_Server -and $_.region -match "^eu"} | Select-Object -First 1) | Foreach-Object {
+                            [void]$Pool_FailOver.Add($_)
+                        }
+                    }
+
+                    $Pool_AllHosts | Where-Object {$_.name -ne $Miner_Server -and $Pool_FailOver -notcontains $_} | Select-Object -First 1 | Foreach-Object {
+                        [void]$Pool_FailOver.Add($_)
+                    }
 
                     $Rigs_UserSep   = if (@("ProgPowVeil","ProgPowZ","Ubqhash") -icontains $Pool_Algorithm_Norm) {"*"} else {"."}
 
@@ -738,6 +805,8 @@ if ($AllRigs_Request) {
                             Wallet        = $Pool_Wallet
                             Worker        = $Pool_Worker
                             Email         = $Email
+                            MinerName     = $Rental_MinerName
+                            ExcludeMinerName = $Rental_ExcludeMinerName
                         }
                     }
                 }
@@ -1049,11 +1118,22 @@ if (-not $InfoOnly -and (-not $API.DownloadList -or -not $API.DownloadList.Count
                         $RigType ="$($RigDevice.Foreach("Type") | Select-Object -Unique)".ToUpper()
 
                         if ($RigType -eq "GPU") {
-                            $RigDeviceRam = ($RigDevice | Foreach-Object {$_.OpenCL.GlobalMemsize} | Measure-Object -Minimum).Minimum / 1GB
-                            if ($IsWindows -and $Session.IsWin10 -and -not $Session.Config.EnableEthashZombieMode) {
-                                $RigDeviceRam *= 0.8652
-                            }
+                            $RigDeviceRam = ($RigDevice | Foreach-Object {
+                                    $DevRam = $null
+                                    if (-not $Session.Config.EnableEthashZombieMode) {$DevRam = Get-DeviceUsableVRAMGB $_}
+                                    if ($DevRam -eq $null) {
+                                        $DevRam = $_.OpenCL.GlobalMemsize / 1GB
+                                        if ($IsWindows -and $Session.IsWin10 -and -not $Session.Config.EnableEthashZombieMode) {$DevRam = $DevRam * 0.8652}
+                                    }
+                                    $DevRam
+                                } | Measure-Object -Minimum).Minimum
                             $RigDeviceRam = [Math]::Round($RigDeviceRam,3)
+                            foreach ($dRam in @(24,20,16,12,11,10,8,6,5,4,3,5,3,2,1)) {
+                                if ($dRam -le $RigDeviceRam) {
+                                    $RigDeviceRam = $dRam
+                                    break
+                                }
+                            }
                         }
 
                         if (-not $MinersNeedingBenchmark) {$CurrentlyBenchmarking = @()}

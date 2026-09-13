@@ -8,14 +8,11 @@ param(
 
 # $Name = Get-Item $MyInvocation.MyCommand.Path | Select-Object -ExpandProperty BaseName
 
-$Payout_Currencies = @()
-foreach($PoolExt in @("","AE","Solo")) {
-    if (-not $UsePools -or "$($Name)$($PoolExt)" -in $UsePools) {
-        $Payout_Currencies += @($Config.Pools."$($Name)$($PoolExt)".Wallets.PSObject.Properties | Select-Object)
+$Payout_Currencies = @(foreach ($PoolExt in "","AE","Solo") {
+    if (-not $UsePools -or "$Name$PoolExt" -in $UsePools) {
+        $Config.Pools."$Name$PoolExt".Wallets.PSObject.Properties | Where-Object Value
     }
-}
-
-$Payout_Currencies = $Payout_Currencies | Where-Object Value | Select-Object Name,Value -Unique | Sort-Object Name,Value
+}) | Sort-Object Name, Value -Unique
 
 if (-not $Payout_Currencies) {
     Write-Log -Level Verbose "Cannot get balance on pool ($Name) - no wallet address specified. "
@@ -27,15 +24,14 @@ $Pools_Data = @(
     [PSCustomObject]@{rpc = "beam";  symbol = "BEAM";     port = 5252; fee = 1.0; divisor = 1e8; ssl = $true}
     [PSCustomObject]@{rpc = "btg";   symbol = "BTG";      port = 4040; fee = 1.0; divisor = 1e8}
     [PSCustomObject]@{rpc = "ckb";   symbol = "CKB";      port = 6464; fee = 1.0; divisor = 1e8}
-    [PSCustomObject]@{rpc = "clore"; symbol = "CLORE";    port = 2020; fee = 1.0; divisor = 1e8}
     [PSCustomObject]@{rpc = "ctxc";  symbol = "CTXC";     port = 2222; fee = 1.0; divisor = 1e18}
     [PSCustomObject]@{rpc = "erg";   symbol = "ERG";      port = 8888; fee = 1.0; divisor = 1e9}
     [PSCustomObject]@{rpc = "etc";   symbol = "ETC";      port = 1010; fee = 1.0; divisor = 1e18}
     [PSCustomObject]@{rpc = "ethw";  symbol = "ETHW";     port = 2020; fee = 1.0; divisor = 1e18}
-    [PSCustomObject]@{rpc = "flux";  symbol = "FLUX";     port = 9090; fee = 1.0; divisor = 1e8; altsymbol = "ZEL"}
+    #[PSCustomObject]@{rpc = "flux";  symbol = "FLUX";     port = 9090; fee = 1.0; divisor = 1e8; altsymbol = "ZEL"} #FLUX mining ended 2025-10-25
     [PSCustomObject]@{rpc = "grin";  symbol = "GRIN-PRI"; port = 3030; fee = 1.0; divisor = 1e9; cycles = 42}
     [PSCustomObject]@{rpc = "kas";   symbol = "KAS";      port = 2020; fee = 1.0; divisor = 1e8}
-    [PSCustomObject]@{rpc = "kls";   symbol = "KLS";      port = 2020; fee = 1.0; divisor = 1e8}
+    #[PSCustomObject]@{rpc = "kls";   symbol = "KLS";      port = 2020; fee = 1.0; divisor = 1e8} #KLS mining ended, kls.2miners.com is gone 2026-08
     [PSCustomObject]@{rpc = "mwc";   symbol = "MWC-PRI";  port = 7575; fee = 1.0; divisor = 1e9; cycles = 42}
     [PSCustomObject]@{rpc = "neox";  symbol = "NEOX";     port = 4040; fee = 1.0; divisor = 1e8}
     [PSCustomObject]@{rpc = "nexa";  symbol = "NEXA";     port = 5050; fee = 1.0; divisor = 100}
@@ -45,19 +41,17 @@ $Pools_Data = @(
     [PSCustomObject]@{rpc = "zeph";  symbol = "ZEPH";     port = 2222; fee = 1.0; divisor = 1e12}
 
     #AutoExchange currencies BTC
-    [PSCustomObject]@{rpc = "clore"; symbol = "BTC"; port = 2020; fee = 1.0; divisor = 1e8; aesymbol = "CLORE"}
     [PSCustomObject]@{rpc = "erg";   symbol = "BTC"; port = 8888; fee = 1.0; divisor = 1e9; aesymbol = "ERG"}
     [PSCustomObject]@{rpc = "etc";   symbol = "BTC"; port = 1010; fee = 1.0; divisor = 1e9; aesymbol = "ETC"}
     [PSCustomObject]@{rpc = "ethw";  symbol = "BTC"; port = 2020; fee = 1.0; divisor = 1e9; aesymbol = "ETHW"}
     [PSCustomObject]@{rpc = "kas";   symbol = "BTC"; port = 2020; fee = 1.0; divisor = 1e8; aesymbol = "KAS"}
-    [PSCustomObject]@{rpc = "kls";   symbol = "BTC"; port = 2020; fee = 1.0; divisor = 1e8; aesymbol = "KLS"}
+    #[PSCustomObject]@{rpc = "kls";   symbol = "BTC"; port = 2020; fee = 1.0; divisor = 1e8; aesymbol = "KLS"} #KLS mining ended, kls.2miners.com is gone 2026-08
     [PSCustomObject]@{rpc = "nexa";  symbol = "BTC"; port = 5050; fee = 1.0; divisor = 100; aesymbol = "NEXA"}
     [PSCustomObject]@{rpc = "rvn";   symbol = "BTC"; port = 6060; fee = 1.0; divisor = 1e8; aesymbol = "RVN"}
     [PSCustomObject]@{rpc = "xna";   symbol = "BTC"; port = 6060; fee = 1.0; divisor = 1e8; aesymbol = "XNA"}
     [PSCustomObject]@{rpc = "zec";   symbol = "BTC"; port = 1010; fee = 1.0; divisor = 1e8; aesymbol = "ZEC"}
 
     #AutoExchange currencies TON
-    [PSCustomObject]@{rpc = "clore"; symbol = "TON"; port = 2020; fee = 1.0; divisor = 1e8; aesymbol = "CLORE"}
     [PSCustomObject]@{rpc = "erg";   symbol = "TON"; port = 8888; fee = 1.0; divisor = 1e9; aesymbol = "ERG"}
     [PSCustomObject]@{rpc = "etc";   symbol = "TON"; port = 1010; fee = 1.0; divisor = 1e9; aesymbol = "ETC"}
     [PSCustomObject]@{rpc = "ethw";  symbol = "TON"; port = 2020; fee = 1.0; divisor = 1e9; aesymbol = "ETHW"}
@@ -65,6 +59,10 @@ $Pools_Data = @(
     [PSCustomObject]@{rpc = "rvn";   symbol = "TON"; port = 6060; fee = 1.0; divisor = 1e8; aesymbol = "RVN"}
     [PSCustomObject]@{rpc = "xna";   symbol = "TON"; port = 6060; fee = 1.0; divisor = 1e8; aesymbol = "XNA"}
     [PSCustomObject]@{rpc = "zec";   symbol = "TON"; port = 1010; fee = 1.0; divisor = 1e8; aesymbol = "ZEC"}
+
+    #[PSCustomObject]@{rpc = "clore"; symbol = "CLORE";    port = 2020; fee = 1.0; divisor = 1e8}
+    #[PSCustomObject]@{rpc = "clore"; symbol = "BTC"; port = 2020; fee = 1.0; divisor = 1e8; aesymbol = "CLORE"}
+    #[PSCustomObject]@{rpc = "clore"; symbol = "TON"; port = 2020; fee = 1.0; divisor = 1e8; aesymbol = "CLORE"}
 )
 
 $Payout_Currencies | Where-Object {
@@ -105,7 +103,7 @@ $Payout_Currencies | Where-Object {
                     Caption     = "$($Pool_Name) ($Pool_Currency)"
 				    BaseName    = $Pool_Name
                     Info        = $Pool_Info
-                    Name        = $Name + $Pool_Info
+                    Name        = "$Name$Pool_Info"
                     Currency    = $Pool_Currency
                     Balance     = [Decimal]$Request.stats.balance / $Divisor
                     Pending     = [Decimal]$Request.stats.immature / $Divisor

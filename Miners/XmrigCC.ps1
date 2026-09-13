@@ -11,7 +11,7 @@ if (-not $Global:DeviceCache.DevicesByTypes.AMD -and -not $Global:DeviceCache.De
 
 $ManualUri = "https://github.com/Bendr0id/xmrigCC/releases"
 $Port = "376{0:d2}"
-$Version = "3.4.6"
+$Version = "3.4.9"
 $DevFee = 0.0
 
 $UriCuda = $null
@@ -26,12 +26,25 @@ if ($IsLinux) {
 
     if ($Global:GlobalCPUInfo.Vendor -eq "ARM" -or $Global:GlobalCPUInfo.Features.ARM) {
         if ($Global:GlobalCPUInfo.Architecture -eq 8) {
-            $Uri = "https://github.com/RainbowMiner/miner-binaries/releases/download/v3.4.6-xmrigcc/xmrigcc-3.4.6-armv8.7z"
+            $distroCodename = if ($Session.LinuxDistroInfo.distroCodename -in @("jammy","noble")) {
+                $Session.LinuxDistroInfo.distroCodename
+            } else {
+                "generic"
+                $DevFee = 1.0
+            }
+
+            $Uri = "https://github.com/RainbowMiner/miner-binaries/releases/download/v3.4.9-xmrigcc/xmrigcc-3.4.9-{DISTROCODENAME}-armv8.7z" -replace "{DISTROCODENAME}",$distroCodename
         }
     } else {
         if ($Session.LibCVersion -and $Session.LibCVersion -lt (Get-Version "2.25")) {return}
 
-        $Uri = "https://github.com/RainbowMiner/miner-binaries/releases/download/v3.4.6-xmrigcc/xmrigcc-3.4.6-bionic-x64.7z"
+        $distroCodename = if ($Session.LinuxDistroInfo.distroCodename -in @("focal","jammy","noble")) {
+            $Session.LinuxDistroInfo.distroCodename
+        } else {
+            "focal"
+        }
+
+        $Uri = "https://github.com/RainbowMiner/miner-binaries/releases/download/v3.4.9-xmrigcc/xmrigcc-3.4.9-{DISTROCODENAME}-x64.7z" -replace "{DISTROCODENAME}",$distroCodename
 
         $CudaData = @(
             [PSCustomObject]@{
@@ -130,7 +143,7 @@ if ($IsLinux) {
     $Executables = @("xmrigMiner")
 } else {
 
-    $Uri = "https://github.com/RainbowMiner/miner-binaries/releases/download/v3.4.6-xmrigcc/xmrigcc-3.4.6-msvc-win64.7z"
+    $Uri = "https://github.com/RainbowMiner/miner-binaries/releases/download/v3.4.9-xmrigcc/xmrigcc-3.4.9-msvc-win64.7z"
 
     $CudaData = @(
         [PSCustomObject]@{
@@ -253,8 +266,10 @@ $Commands = [PSCustomObject[]]@(
     [PSCustomObject]@{MainAlgorithm = "rx/0";                       MinMemGb = 2.0; Params = ""; ExtendInterval = 2; Vendor = @("AMD","CPU","INTEL","NVIDIA")}
     [PSCustomObject]@{MainAlgorithm = "rx/arq";                     MinMemGb = 2.0; Params = ""; ExtendInterval = 3; Vendor = @("AMD","CPU","INTEL","NVIDIA")}
     [PSCustomObject]@{MainAlgorithm = "rx/grft";                    MinMemGb = 2.0; Params = ""; ExtendInterval = 2; Vendor = @("AMD","CPU","INTEL","NVIDIA")} #CUDA Plugin v6.12.0 doesn't support GRFT, v6.15.0 has memory bug
+    [PSCustomObject]@{MainAlgorithm = "rx/scash";                   MinMemGb = 2.0; Params = ""; ExtendInterval = 2; Vendor = @("CPU")}
     [PSCustomObject]@{MainAlgorithm = "rx/sfx";                     MinMemGb = 2.0; Params = ""; ExtendInterval = 2; Vendor = @("AMD","CPU","INTEL","NVIDIA")}
     [PSCustomObject]@{MainAlgorithm = "rx/tuske";                   MinMemGb = 2.0; Params = ""; ExtendInterval = 2; Vendor = @("CPU")}
+    [PSCustomObject]@{MainAlgorithm = "rx/vrl";                     MinMemGb = 2.0; Params = ""; ExtendInterval = 2; Vendor = @("CPU")}
     [PSCustomObject]@{MainAlgorithm = "rx/wow";                     MinMemGb = 2.0; Params = ""; ExtendInterval = 2; Vendor = @("AMD","CPU","INTEL","NVIDIA")}
     [PSCustomObject]@{MainAlgorithm = "rx/xdag";                    MinMemGb = 2.0; Params = ""; ExtendInterval = 2; Vendor = @("CPU")}
     [PSCustomObject]@{MainAlgorithm = "rx/xeq";                     MinMemGb = 2.0; Params = ""; ExtendInterval = 2; Vendor = @("CPU")}
@@ -330,7 +345,7 @@ foreach ($Miner_Vendor in @("AMD","CPU","INTEL","NVIDIA")) {
 
             $Algorithm_Norm_0 = Get-Algorithm $_.MainAlgorithm
 
-            $All_Algorithms = if ($Miner_Vendor -eq "CPU") {@($Algorithm_Norm_0,"$($Algorithm_Norm_0)-$($Miner_Model)")} else {@($Algorithm_Norm_0,"$($Algorithm_Norm_0)-$($Miner_Model)","$($Algorithm_Norm_0)-GPU")}
+            $All_Algorithms = if ($Miner_Vendor -eq "CPU") {@(Get-PoolAlgorithmKeys -Pools $Pools -Algorithm $Algorithm_Norm_0 -Model $Miner_Model -NoGPU -ExcludePoolName "$($_.ExcludePoolName)")} else {@(Get-PoolAlgorithmKeys -Pools $Pools -Algorithm $Algorithm_Norm_0 -Model $Miner_Model -ExcludePoolName "$($_.ExcludePoolName)")}
 
             $ByParameters = $_.ByParameters
 
@@ -383,7 +398,7 @@ foreach ($Miner_Vendor in @("AMD","CPU","INTEL","NVIDIA")) {
                                     "init" = -1
                                     "numa" = $true
                                 }
-                                "donate-level" = 0
+                                "donate-level" = $DevFee
                                 "log-file"     = $null
                                 "print-time"   = 5
                                 "retries"      = 5
@@ -401,6 +416,7 @@ foreach ($Miner_Vendor in @("AMD","CPU","INTEL","NVIDIA")) {
                                     "keepalive" = $true
                                     "enabled"   = $true
                                     "tls"       = $Pools.$Algorithm_Norm.SSL
+                                    "ip_version"= 4
                                 }
                             )
                             Vendor  = $Miner_Vendor

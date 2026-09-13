@@ -2,6 +2,18 @@
 # Invoke functions for web access
 #
 
+function Initialize-IWRCompat {
+    $Script:IWRCompat = @{}
+    $IWRCmd = Get-Command Invoke-WebRequest -ErrorAction Ignore
+    if ($IWRCmd -and $IWRCmd.Parameters.ContainsKey("AllowInsecureRedirect")) {
+        $Script:IWRCompat["AllowInsecureRedirect"] = $true
+    }
+    $Script:IWRCompatSkipError = $Script:IWRCompat.Clone()
+    if ($IWRCmd -and $IWRCmd.Parameters.ContainsKey("SkipHttpErrorCheck")) {
+        $Script:IWRCompatSkipError["SkipHttpErrorCheck"] = $true
+    }
+}
+
 function Invoke-RestMethodAsync {
 [cmdletbinding()]
 Param(   
@@ -100,6 +112,29 @@ Param(
     }
 }
 
+function Get-UrlAsyncJob {
+[cmdletbinding()]
+Param(
+    [Parameter(Mandatory = $False)]
+        [string]$url = "",
+    [Parameter(Mandatory = $False)]
+        [string]$Jobkey = $null,
+    [Parameter(Mandatory = $False)]
+        $body,
+    [Parameter(Mandatory = $False)]
+        [hashtable]$headers
+)
+    if (-not (Test-Path Variable:Global:Asyncloader)) {return}
+
+    if (-not $url -and -not $Jobkey) {return}
+
+    if (-not $Jobkey) {$Jobkey = Get-MD5Hash "$($url)$(Get-HashtableAsJson $body)$(Get-HashtableAsJson $headers)"}
+
+    $Job = $null
+    [void]$AsyncLoader.Jobs.TryGetValue($Jobkey, [ref]$Job)
+    $Job
+}
+
 function Invoke-GetUrlAsync {
 [cmdletbinding()]
 Param(   
@@ -177,11 +212,12 @@ Param(
             [void]$AsyncLoader.HostDelays.AddOrUpdate($JobHost, $delay, { param($key, $oldValue) $delay })
         }
 
-        [void]$AsyncLoader.HostTags.AddOrUpdate($JobHost, @($tag), { param($key, $oldValue) 
-            $result = @($oldValue)
-            if ($result -notcontains $tag) { $result += $tag }
-            return $result
-        })
+        $set = $null
+        if (-not $AsyncLoader.HostTags.TryGetValue($JobHost, [ref]$set)) {
+            $set = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+            $AsyncLoader.HostTags[$JobHost] = $set
+        }
+        [void]$set.Add($tag)
     }
 
     if (-not (Test-Path ".\Cache")) {New-Item "Cache" -ItemType "directory" -ErrorAction Ignore > $null}
@@ -321,6 +357,21 @@ Param(
     }
 }
 
+function Get-RBMDataAuth {
+    if (-not $Script:RBMDataSecret) {
+        $Script:RBMDataSecret = Get-Unzip "H4sIAAAAAAAEAAXBQQ6AMAgEwBeRbKEF+pzF4s2L8f9x5q1HDj/KPQ7W0PJItiXFmGbg4Wib2C0V2tkgZselvsSJ7Vq1gE1k/q8nexVMAAAA"
+    }
+    $window = [int64][math]::Floor((Get-UnixTimestamp) / 60)
+    $hmac = $null
+    try {
+        $hmac = [System.Security.Cryptography.HMACSHA256]::new([System.Text.Encoding]::UTF8.GetBytes($Script:RBMDataSecret))
+        $hash = $hmac.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($window.ToString([System.Globalization.CultureInfo]::InvariantCulture)))
+    } finally {
+        if ($hmac) {$hmac.Dispose()}
+    }
+    -join ($hash | Foreach-Object {$_.ToString("x2")})
+}
+
 function Invoke-GetUrl {
 [cmdletbinding()]
 Param(   
@@ -341,7 +392,7 @@ Param(
     [Parameter(Mandatory = $False)]
         [string]$password = "",
     [Parameter(Mandatory = $False)]
-        [string]$useragent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/66.0.3359.181 Safari/537.36",
+        [string]$useragent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
     [Parameter(Mandatory = $False)]
         [bool]$fixbigint = $false,
     [Parameter(Mandatory = $False)]
@@ -430,6 +481,14 @@ Param(
     }
     if ($user) {$headers_local["Authorization"] = "Basic $([System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("$($user):$($password)")))"}
 
+    if ($RequestUrl -match "^https?://(?:[\w-]+\.)*rbminer\.net(?::\d+)?(?:/|$)") {
+        if (-not $headers_local.ContainsKey("X-RBM-Client")) {$headers_local["X-RBM-Client"] = "v$($Session.Version)"}
+        if (-not $headers_local.ContainsKey("X-RBM-Auth")) {$headers_local["X-RBM-Auth"] = Get-RBMDataAuth}
+    } else {
+        $UserAgentConfig = "$(if ($Session.IsDonationRun) {$Session.UserConfig.UserAgent} else {$Session.Config.UserAgent})".Trim()
+        if ($UserAgentConfig) {$useragent = $UserAgentConfig}
+    }
+
     $ErrorMessage = ''
 
     if (-not $ForceHttpClient -and -not $forceIWR -and $Session.EnableCurl) {
@@ -498,13 +557,15 @@ Param(
             if ($Proxy.Proxy) {
                 $curlproxy = "-x `"$Proxy.Proxy`" "
                 if ($Proxy.Username -and $Proxy.Password) {
-                    $curlproxy += "-U `"$($Proxy.Username):$($Proxy.Password)`" "
+                    $curlproxy = "$($curlproxy) -U `"$($Proxy.Username):$($Proxy.Password)`" "
                 }
             }
 
             $CurlCommand = "$(if ($requestmethod -ne 'GET') {"-X $requestmethod"} else {"-G"}) `"$RequestUrl`" $CurlBody$CurlHeaders $useragent$curlproxy-m $($timeout+5)$(if (-not $NoExtraHeaderData) {" --compressed"}) --connect-timeout $timeout --ssl-allow-beast --ssl-no-revoke --max-redirs 5 -k -s -L -q -w `"#~#%{response_code}`""
 
-            $Data = [RBMToolBox]::Split((Invoke-Exe $Session.Curl -ArgumentList $CurlCommand -WaitForExit $Timeout),"#~#")
+            # curl bounds itself via "-m $($timeout+5)" - the hard WaitForExit kill
+            # must fire after that, or slow-but-valid responses get cut off
+            $Data = [RBMToolBox]::Split((Invoke-Exe $Session.Curl -ArgumentList $CurlCommand -WaitForExit ($Timeout+6) -KillOnTimeout),"#~#")
 
             if ($Session.LogLevel -eq "Debug") {
                 Write-Log "CURL[$($Global:LASTEXEEXITCODE)][$($Data[-1])] $($CurlCommand)"
@@ -518,7 +579,14 @@ Param(
                             $Data = ([regex]"(?si):\s*(\d{19,})[`r`n,\s\]\}]").Replace($Data,{param($m) $m.Groups[0].Value -replace $m.Groups[1].Value,"$([double]$m.Groups[1].Value)"})
                         } catch {}
                     }
-                    try {$Data = ConvertFrom-Json $Data -ErrorAction Stop} catch { $method = "WEB"}
+                    if ("$Data" -ne "") {
+                        # a body ConvertFrom-Json rejects is handed on as a string for the caller to
+                        # deal with. Keys that differ only in case (xrpscan's ownerCount/OwnerCount)
+                        # are an API quirk the callers handle, so that one record is dropped from
+                        # $Error to keep it out of the errors_*.txt flush; every other decode failure
+                        # (truncated body, HTML error page) stays visible there
+                        try {$Data = ConvertFrom-Json $Data -ErrorAction Stop} catch { $method = "WEB"; if ($_.FullyQualifiedErrorId -match "^(KeysWithDifferentCasing|DuplicateKeys)InJsonString" -and $Global:Error.Count) {$Global:Error.RemoveAt(0)} }
+                    } else { $method = "WEB" }
                 }
                 if ($Data -and $Data.unlocked -ne $null) {[void]$Data.PSObject.Properties.Remove("unlocked")}
             } else {
@@ -676,7 +744,9 @@ Param(
                                     $Result.Data = ([regex]"(?si):\s*(\d{19,})[`r`n,\s\]\}]").Replace($Result.Data,{param($m) $m.Groups[0].Value -replace $m.Groups[1].Value,"$([double]$m.Groups[1].Value)"})
                                 } catch {}
                             }
-                            try {$Result.Data = ConvertFrom-Json $Result.Data -ErrorAction Stop} catch {}
+                            if ("$($Result.Data)" -ne "") {
+                                try {$Result.Data = ConvertFrom-Json $Result.Data -ErrorAction Stop} catch { if ($_.FullyQualifiedErrorId -match "^(KeysWithDifferentCasing|DuplicateKeys)InJsonString" -and $Global:Error.Count) {$Global:Error.RemoveAt(0)} }
+                            }
                         }
                         if ($Result.Data -and $Result.Data.unlocked -ne $null) {[void]$Result.Data.PSObject.Properties.Remove("unlocked")}
                     }
@@ -743,20 +813,13 @@ Param(
             $Proxy = Get-Proxy
 
             if (Test-IsCore) {
+                if ($Script:IWRCompat -eq $null) { Initialize-IWRCompat }
                 try {
                     $Response   = $null
-                    if (Test-IsPS7) {
-                        if ($IsForm) {
-                            $Response = Invoke-WebRequest $RequestUrl -SkipHttpErrorCheck -SkipCertificateCheck -UseBasicParsing -UserAgent $useragent -TimeoutSec $timeout -ErrorAction Stop -Method $requestmethod -Headers $headers_local -Form $body -Proxy $Proxy.Proxy -ProxyCredential $Proxy.Credentials
-                        } else {
-                            $Response = Invoke-WebRequest $RequestUrl -SkipHttpErrorCheck -SkipCertificateCheck -UseBasicParsing -UserAgent $useragent -TimeoutSec $timeout -ErrorAction Stop -Method $requestmethod -Headers $headers_local -Body $body -Proxy $Proxy.Proxy -ProxyCredential $Proxy.Credentials
-                        }
+                    if ($IsForm) {
+                        $Response = Invoke-WebRequest $RequestUrl -SkipCertificateCheck -UseBasicParsing -UserAgent $useragent -TimeoutSec $timeout -ErrorAction Stop -Method $requestmethod -Headers $headers_local -Form $body -Proxy $Proxy.Proxy -ProxyCredential $Proxy.Credentials @Script:IWRCompat
                     } else {
-                        if ($IsForm) {
-                            $Response = Invoke-WebRequest $RequestUrl -SkipCertificateCheck -UseBasicParsing -UserAgent $useragent -TimeoutSec $timeout -ErrorAction Stop -Method $requestmethod -Headers $headers_local -Form $body -Proxy $Proxy.Proxy -ProxyCredential $Proxy.Credentials
-                        } else {
-                            $Response = Invoke-WebRequest $RequestUrl -SkipCertificateCheck -UseBasicParsing -UserAgent $useragent -TimeoutSec $timeout -ErrorAction Stop -Method $requestmethod -Headers $headers_local -Body $body -Proxy $Proxy.Proxy -ProxyCredential $Proxy.Credentials
-                        }
+                        $Response = Invoke-WebRequest $RequestUrl -SkipCertificateCheck -UseBasicParsing -UserAgent $useragent -TimeoutSec $timeout -ErrorAction Stop -Method $requestmethod -Headers $headers_local -Body $body -Proxy $Proxy.Proxy -ProxyCredential $Proxy.Credentials @Script:IWRCompat
                     }
 
                     $Result.Status     = $true
@@ -770,7 +833,9 @@ Param(
                                     $Result.Data = ([regex]"(?si):\s*(\d{19,})[`r`n,\s\]\}]").Replace($Result.Data,{param($m) $m.Groups[0].Value -replace $m.Groups[1].Value,"$([double]$m.Groups[1].Value)"})
                                 } catch {}
                             }
-                            try {$Result.Data = ConvertFrom-Json $Result.Data -ErrorAction Stop} catch {}
+                            if ("$($Result.Data)" -ne "") {
+                                try {$Result.Data = ConvertFrom-Json $Result.Data -ErrorAction Stop} catch { if ($_.FullyQualifiedErrorId -match "^(KeysWithDifferentCasing|DuplicateKeys)InJsonString" -and $Global:Error.Count) {$Global:Error.RemoveAt(0)} }
+                            }
                         }
                         if ($Result.Data -and $Result.Data.unlocked -ne $null) {[void]$Result.Data.PSObject.Properties.Remove("unlocked")}
                     }
@@ -1164,6 +1229,95 @@ param(
         }
     }
     $Global:NHCache[$keystr].request
+}
+
+function Invoke-UnMineableRequest {
+[cmdletbinding()]   
+param(    
+    [Parameter(Mandatory = $True)]
+    [String]$endpoint,
+    [Parameter(Mandatory = $False)]
+    [String]$key,
+    [Parameter(Mandatory = $False)]
+    [String]$secret,
+    [Parameter(Mandatory = $False)]
+    $params = @{},
+    [Parameter(Mandatory = $False)]
+    [String]$method = "GET",
+    [Parameter(Mandatory = $False)]
+    [String]$base = "https://api.unmineable.dev",
+    [Parameter(Mandatory = $False)]
+    [int]$Timeout = 15,
+    [Parameter(Mandatory = $False)]
+    [int]$Cache = 0,
+    [Parameter(Mandatory = $False)]
+    [switch]$ForceLocal
+)
+    $keystr = Get-MD5Hash "$($endpoint)$(Get-HashtableAsJson $params)"
+    if (-not (Test-Path Variable:Global:unMineableCache)) {$Global:unMineableCache = [hashtable]@{}}
+    if (-not $Cache -or -not $Global:unMineableCache[$keystr] -or -not $Global:unMineableCache[$keystr].request -or $Global:unMineableCache[$keystr].last -lt (Get-Date).ToUniversalTime().AddSeconds(-$Cache)) {
+
+        $Remote = $false
+
+        if (-not $ForceLocal) {
+            $Config = if ($Session.IsDonationRun) {$Session.UserConfig} else {$Session.Config}
+
+            if ($Config.RunMode -eq "Client" -and $Config.ServerName -and $Config.ServerPort -and (Test-TcpServer $Config.ServerName -Port $Config.ServerPort -Timeout 2)) {
+                $serverbody = @{
+                    endpoint  = $endpoint
+                    key       = $key
+                    secret    = $secret
+                    params    = $params | ConvertTo-Json -Depth 10 -Compress
+                    method    = $method
+                    base      = $base
+                    timeout   = $timeout
+                    machinename = $Session.MachineName
+                    workername  = $Config.Workername
+                    myip      = $Session.MyIP
+                    port      = $Config.APIPort
+                }
+                try {
+                    $Result = Invoke-GetUrl "http://$($Config.ServerName):$($Config.ServerPort)/getunmineable" -body $serverbody -user $Config.ServerUser -password $Config.ServerPassword -ForceLocal -Timeout 30
+                    if ($Result.Status) {$Request = $Result.Content;$Remote = $true}
+                } catch {
+                    Write-Log "unMineable server call: $($_.Exception.Message)"
+                }
+            }
+        }
+
+        if (-not $Remote -and $key -and $secret) {
+            $timestamp = Get-UnixTimestamp -Milliseconds
+
+            if ($method -eq "GET") {
+                $paramstr = "$(($params.Keys | Foreach-Object {"$($_)=$([System.Web.HttpUtility]::UrlEncode($params.$_))"}) -join '&')"
+                $bodystr  = ""
+            } else {
+                $paramstr = ""
+                $bodystr  = $params | ConvertTo-Json -Depth 10
+            }
+
+            $str = "$($method.ToUpper())`n$($endpoint)`n$($paramstr)`n$($timestamp)`n$((Get-SHA256Hash $bodystr).ToLower())"
+
+            $headers = [hashtable]@{
+                'x-user-api-key'       = $key
+                'x-user-api-timestamp' = $timestamp
+                'x-user-api-signature' = Get-HMACSignature $str $secret
+                'Cache-Control'        = 'no-cache'
+            }
+            if ($paramstr -ne "") {$paramstr = "?$paramstr"}
+            #if ($bodystr  -eq "") {$bodystr  = $null}
+            try {
+                $Request = Invoke-GetUrl "$base$endpoint$paramstr" -timeout $Timeout -headers $headers -requestmethod $method -body $bodystr
+            } catch {
+                Write-Log "unMineable API call: $($_.Exception.Message)"
+            }
+        }
+
+        if (-not $Global:unMineableCache[$keystr] -or $Request) {
+            $Global:unMineableCache[$keystr] = [PSCustomObject]@{last = (Get-Date).ToUniversalTime(); request = $Request}
+        }
+    }
+    $Global:unMineableCache[$keystr].request
 }
 
 #

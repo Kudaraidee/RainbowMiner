@@ -8,21 +8,26 @@ if (-not $LocalAPIport) {$LocalAPIport = 4000}
 
 Set-OsFlags -NoDLLs
 
-$ProtectedMinerFiles = if (Test-Path ".\Data\protectedminerfiles.json") {Get-Content ".\Data\protectedminerfiles.json" -Raw | ConvertFrom-Json}
-if (Test-Path ".\Config\minerconfigfiles.txt") {Get-Content ".\Config\minerconfigfiles.txt" | Where-Object {$_ -match "^([^;]+)"} | Foreach-Object {if ($File = $Matches[1].Trim()) {$ProtectedMinerFiles += $File}}}
-
+$ProtectedMinerFiles = [System.Collections.Generic.List[string]]::new()
+if (Test-Path ".\Data\protectedminerfiles.json") {
+    $p = Get-Content ".\Data\protectedminerfiles.json" -Raw | ConvertFrom-Json
+    $p | Foreach-Object {[void]$ProtectedMinerFiles.Add($_)}
+}
+if (Test-Path ".\Config\minerconfigfiles.txt") {
+    Get-Content ".\Config\minerconfigfiles.txt" | Where-Object {$_ -match "^([^;]+)"} | Foreach-Object {if ($File = $Matches[1].Trim()) {[void]$ProtectedMinerFiles.Add($File)}}
+}
 $Sha256 = if (Test-Path (".\Data\minersha256.json")) {Get-Content ".\Data\minersha256.json" -Raw | ConvertFrom-Json}
 
 [System.Collections.ArrayList]$RunningMiners_Paths = @()
 try {
-    $RunningMiners_Request = Invoke-RestMethod "http://localhost:$($LocalAPIport)/runningminers" -UseBasicParsing -ErrorAction Stop
+    $RunningMiners_Request = Invoke-RestMethod "http://127.0.0.1:$($LocalAPIport)/runningminers" -UseBasicParsing -ErrorAction Stop
     if ($RunningMiners_Request -isnot [array]) {
         if (-not $RunningMiners_Paths.Contains($RunningMiners_Request.Path)) {
             [void]$RunningMiners_Paths.Add($RunningMiners_Request.Path)
         }
     }
     else {
-        $RunningMiners_Request | Foreach-Object {$RunningMiners_Paths += $_.Path}
+        $RunningMiners_Request | Foreach-Object {[void]$RunningMiners_Paths.Add($_.Path)}
     }
 }
 catch {
@@ -82,7 +87,7 @@ $DownloadList | Where-Object {-not $RunningMiners_Paths.Contains($_.Path)} | For
                 }
             }
             else {
-                Expand-WebRequest $URI $(if ($IsMiner) {Get-MinerInstPath $Path} else {Split-Path $Path}) -ProtectedFiles @(if ($IsMiner) {$ProtectedMinerFiles}) -Sha256 ($Sha256.$URI) -ErrorAction Stop -EnableMinerBackups:$DownloaderConfig.EnableMinerBackups -EnableKeepDownloads:$DownloaderConfig.EnableKeepDownloads -IsMiner:$IsMiner
+                Expand-WebRequest $URI $(if ($IsMiner) {Get-MinerInstPath $Path} else {Split-Path $Path}) -ProtectedFiles @(if ($IsMiner) {$ProtectedMinerFiles.ToArray()}) -Sha256 ($Sha256.$URI) -ErrorAction Stop -EnableMinerBackups:$DownloaderConfig.EnableMinerBackups -EnableKeepDownloads:$DownloaderConfig.EnableKeepDownloads -IsMiner:$IsMiner
             }
             if ($IsMiner) {[PSCustomObject]@{URI = $URI} | ConvertTo-Json -Depth 10 | Set-Content $UriJson -Encoding UTF8}
         }

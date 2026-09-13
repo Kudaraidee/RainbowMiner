@@ -42,7 +42,7 @@ $Commands = [PSCustomObject[]]@(
     [PSCustomObject]@{MainAlgorithm = "Etchash"       ; DAG = $true; MinMemGB = 3;   Params = "-a ETCHASH";       Vendor = @("AMD","NVIDIA"); ExtendInterval = 2; ExcludePoolName = "MiningRigRentals"} #Etchash 
     [PSCustomObject]@{MainAlgorithm = "EthashLowMemory" ; DAG = $true; MinMemGB = 2;   Params = "-a ETHASH";      Vendor = @("AMD","NVIDIA"); ExtendInterval = 2; ExcludePoolName = "MiningRigRentals"} #Ethash for low memory coins
     [PSCustomObject]@{MainAlgorithm = "EvrProgPow"    ; DAG = $true; MinMemGB = 3;   Params = "-a EvrProgPow";    Vendor = @("AMD","NVIDIA"); ExtendInterval = 2} #EvrProgPow
-    [PSCustomObject]@{MainAlgorithm = "FiroPow"       ; DAG = $true; MinMemGB = 3;   Params = "-a FiroPow";       Vendor = @("AMD","NVIDIA"); ExtendInterval = 2; ExcludePoolName = "ZergPool|ZPool"} #FiroPow
+    #[PSCustomObject]@{MainAlgorithm = "FiroPow"       ; DAG = $true; MinMemGB = 3;   Params = "-a FiroPow";       Vendor = @("AMD","NVIDIA"); ExtendInterval = 2; ExcludePoolName = "ZergPool|ZPool"} #FiroPow
     [PSCustomObject]@{MainAlgorithm = "SCCPow"        ; DAG = $true; MinMemGB = 3;   Params = "-a FiroPowSCC";    Vendor = @("AMD","NVIDIA"); ExtendInterval = 2; ExcludePoolName = "ZergPool|ZPool"} #SCCPow
     [PSCustomObject]@{MainAlgorithm = "FishHash"      ; DAG = $true; MinMemGB = 3;   Params = "-a FishHash";      Vendor = @("AMD","NVIDIA"); ExtendInterval = 2} #FishHash/IRON
     [PSCustomObject]@{MainAlgorithm = "Take2"         ;              MinMemGB = 1;   Params = "-a Ghostrider";    Vendor = @("CPU","NVIDIA"); FaultTolerance = 10; ExtendInterval = 3; DevFee = 1.0} #Ghostrider
@@ -60,14 +60,14 @@ $Commands = [PSCustomObject[]]@(
     [PSCustomObject]@{MainAlgorithm = "SHA3d"         ;              MinMemGB = 2;   Params = "-a Sha3d";         Vendor = @("AMD","NVIDIA"); ExtendInterval = 2} #SHA3d
     [PSCustomObject]@{MainAlgorithm = "SHA3Solidity"  ;              MinMemGB = 2;   Params = "";                 Vendor = @("AMD","NVIDIA"); ExtendInterval = 2; Coins = @("EGAZ","ETI")} #SHA3Solidity
     [PSCustomObject]@{MainAlgorithm = "SHA256dt"      ;              MinMemGB = 2;   Params = "-a Sha256dt";      Vendor = @("AMD","NVIDIA"); ExtendInterval = 2} #SHA256dt
-    [PSCustomObject]@{MainAlgorithm = "SHA512256d"    ;              MinMemGB = 2;   Params = "-a Sha512256d";    Vendor = @("AMD","NVIDIA"); ExtendInterval = 2} #Sha512256d
+    [PSCustomObject]@{MainAlgorithm = "SHA512256d"    ;              MinMemGB = 2;   Params = "-a Sha512256d";    Vendor = @("AMD","NVIDIA"); ExtendInterval = 2; ExcludePoolName = "MiningRigRentals"} #Sha512256d
     [PSCustomObject]@{MainAlgorithm = "UbqHash"       ;              MinMemGB = 2.4; Params = "-a UBQHASH";       Vendor = @("AMD","NVIDIA"); ExtendInterval = 2} #Ubqhash
     [PSCustomObject]@{MainAlgorithm = "vProgPoW"      ; DAG = $true; MinMemGB = 3;   Params = "-a vProgPow";      Vendor = @("AMD","NVIDIA"); ExtendInterval = 2} #ProgPoWSero (VBK)
 
     #[PSCustomObject]@{MainAlgorithm = "EthashB3"      ; DAG = $true; MinMemGB = 3;   Params = "-a ETHASHB3";      Vendor = @("AMD","NVIDIA"); ExtendInterval = 2; ExcludePoolName = "MiningRigRentals"; SecondaryAlgorithm = "SHA512256d"; SecondaryParams = "-a Sha512256d"} #EthashB3 + SHA512256d
 )
 
-$CoinSymbols = @("AKA","ALPH","ALT","ARL","AVS","BBC","BCH","BLACK","BNBTC","BTC","BTRM","BUT","CLO","CLORE","Coin","EGAZ","EGEM","ELH","EPIC","ETC","ETHF","ETHO","ETHW","ETI","ETP","EVOX","EVR","EXP","FIRO","FITA","FRENS","GRAMS","GSPC","HVQ","IRON","JGC","KAW","KCN","LAB","LTR","MEOW","MEWC","NAPI","NEOX","NOVO","OCTA","PAPRY","PRCO","REDE","RTH","RTM","RVN","RXD","SATO","SATOX","SCC","SERO","SPR","THOON","TTM","UBQ","VBK","VEIL","VKAX","VTE","XEL","XNA","YERB","ZANO","ZELS","ZIL","ZKBTC")
+$CoinSymbols = @("AKA","ALPH","ALT","ARL","AVS","BBC","BCH","BLACK","BNBTC","BTC","BTRM","BUT","CLO","CLORE","Coin","EGAZ","EGEM","ELH","EPIC","ETC","ETHF","ETHO","ETHW","ETI","ETP","EVOX","EVR","EXP","FIRO","FITA","FRENS","GRAMS","GSPC","HVQ","IRON","JGC","KAW","KCN","LAB","LTR","MEOW","MEWC","NAPI","NEOX","NOVO","OCTA","PAPRY","PRCO","REDE","RTH","RTM","RVN","RXD","SATO","SATOX","SCC","SERO","SPR","THOON","TTM","UBQ","VBK","VEIL","VKAX","VTE","XEL","XNA","YERB","ZANO","ZELS","ZKBTC")
 #$a = @($s -split "[\r\n]+" | Foreach-Object {$_ -replace "^[\w]+\s+" -split "[\s,;]+"} | Where-Object {$_ -ne ""} | Sort-Object -Unique) -join '","'
 
 # $Name = Get-Item $MyInvocation.MyCommand.Path | Select-Object -ExpandProperty BaseName
@@ -115,20 +115,12 @@ foreach ($Miner_Vendor in @("AMD","NVIDIA")) {
             $Algorithm_Norm_0 = Get-Algorithm $_.MainAlgorithm
             $Miner_Fee = if ($_.DevFee -ne $null) {$_.DevFee} else {$DevFee}
 
-            $ZilParams = ""
-
-            if ($Miner_Vendor -ne "CPU" -and $Pools.ZilliqaDual) {
-                if ($ZilWallet = $Pools.ZilliqaDual.Wallet) {
-                    $ZilParams = " -cZ ZIL$(if ($Pools.ZilliqaDual.Worker -and $Pools.ZilliqaDual.User -notmatch "{workername" -and $Pools.ZilliqaDual.Pass -notmatch "{workername") {" -wZ $($Pools.ZilliqaDual.Worker)"}) -PZ $(if ($Pools.ZilliqaDual.SSL) {"ssl://"})$($Pools.ZilliqaDual.User)$(if ($Pools.ZilliqaDual.Pass) {":$($Pools.ZilliqaDual.Pass)"})@$($Pools.ZilliqaDual.Host):$($Pools.ZilliqaDual.Port)"
-                }
-            }
-
             if ($Miner_Vendor -eq "CPU") {
                 $CPUThreads = if ($Session.Config.Miners."$Name-CPU-$Algorithm_Norm_0".Threads)  {$Session.Config.Miners."$Name-CPU-$Algorithm_Norm_0".Threads}  elseif ($Session.Config.Miners."$Name-CPU".Threads)  {$Session.Config.Miners."$Name-CPU".Threads}  elseif ($Session.Config.CPUMiningThreads)  {$Session.Config.CPUMiningThreads}
                 $CPUAffinity= if ($Session.Config.Miners."$Name-CPU-$Algorithm_Norm_0".Affinity) {$Session.Config.Miners."$Name-CPU-$Algorithm_Norm_0".Affinity} elseif ($Session.Config.Miners."$Name-CPU".Affinity) {$Session.Config.Miners."$Name-CPU".Affinity} elseif ($Session.Config.CPUMiningAffinity) {$Session.Config.CPUMiningAffinity}
             }
         
-            $All_MainAlgorithms = if ($Miner_Vendor -eq "CPU") {@($Algorithm_Norm_0,"$($Algorithm_Norm_0)-$($Miner_Model)")} else {@($Algorithm_Norm_0,"$($Algorithm_Norm_0)-$($Miner_Model)","$($Algorithm_Norm_0)-GPU")}
+            $All_MainAlgorithms = if ($Miner_Vendor -eq "CPU") {@(Get-PoolAlgorithmKeys -Pools $Pools -Algorithm $Algorithm_Norm_0 -Model $Miner_Model -NoGPU -ExcludePoolName "$($_.ExcludePoolName)")} else {@(Get-PoolAlgorithmKeys -Pools $Pools -Algorithm $Algorithm_Norm_0 -Model $Miner_Model -ExcludePoolName "$($_.ExcludePoolName)")}
 
 		    foreach($Algorithm_Norm in $All_MainAlgorithms) {
                 if (-not $Pools.$Algorithm_Norm.Host) {continue}
@@ -168,21 +160,16 @@ foreach ($Miner_Vendor in @("AMD","NVIDIA")) {
                     }
 
                     $Params = $_.Params
-                    if ($ZilParams -ne "") {
-                        $Params_Symbol = "$(if ($Pools.$Algorithm_Norm.CoinSymbol) {$Pools.$Algorithm_Norm.CoinSymbol} else {$Algorithm_Norm})".Substring(0,2).ToUpper()
-                        $Params = $Params -replace "-c ","-c$($Params_Symbol) " -replace "-a ","-a$($Params_Symbol) " -replace "-w ","-w$($Params_Symbol)"
-                    } else {
-                        $Params_Symbol = ""
-                    }
+                    $Params_Symbol = ""
 
 				    [PSCustomObject]@{
 					    Name           = $Miner_Name
 					    DeviceName     = $Miner_Device.Name
 					    DeviceModel    = $Miner_Model
 					    Path           = $Path
-					    Arguments      = "--api-bind 127.0.0.1:`$mport $($DeviceIDsAll)$(if ($_.DAG -and $SaveDAG) {" -dag-2disk"})$(if ($_.DAG) {" -daginfo"}) -o$($Params_Symbol) $($Miner_Protocol)$($Pools.$Algorithm_Norm.Host):$($Pools.$Algorithm_Norm.Port) -u$($Params_Symbol) $(if ($Pools.$MainAlgorithm_Norm.Wallet) {$Pools.$Algorithm_Norm.Wallet} else {$Pools.$Algorithm_Norm.User})$(if ($Pools.$MainAlgorithm_Norm.Wallet -and $Pools.$Algorithm_Norm.Pass -notmatch "{workername") {" -w$($Params_Symbol) $($Pools.$Algorithm_Norm.Worker)"})$(if ($Pass) {" -p$($Params_Symbol) $($Pass)"})$(if ($Params -notmatch "-c" -and $Pools.$Algorithm_Norm.CoinSymbol -and $CoinSymbols -icontains $Pools.$Algorithm_Norm.CoinSymbol) {" -c$($Params_Symbol) $($Pools.$Algorithm_Norm.CoinSymbol)"})$($ZilParams) $($Params)"
+					    Arguments      = "-rep-i 10 $($DeviceIDsAll)$(if ($_.DAG -and $SaveDAG) {" -dag-2disk"})$(if ($_.DAG) {" -daginfo"}) -o$($Params_Symbol) $($Miner_Protocol)$($Pools.$Algorithm_Norm.Host):$($Pools.$Algorithm_Norm.Port) -u$($Params_Symbol) $(if ($Pools.$MainAlgorithm_Norm.Wallet) {$Pools.$Algorithm_Norm.Wallet} else {$Pools.$Algorithm_Norm.User})$(if ($Pools.$MainAlgorithm_Norm.Wallet -and $Pools.$Algorithm_Norm.Pass -notmatch "{workername") {" -w$($Params_Symbol) $($Pools.$Algorithm_Norm.Worker)"})$(if ($Pass) {" -p$($Params_Symbol) $($Pass)"})$(if ($Params -notmatch "-c" -and $Pools.$Algorithm_Norm.CoinSymbol -and $CoinSymbols -icontains $Pools.$Algorithm_Norm.CoinSymbol) {" -c$($Params_Symbol) $($Pools.$Algorithm_Norm.CoinSymbol)"}) $($Params)"
 					    HashRates      = [PSCustomObject]@{$Algorithm_Norm = $($Global:StatsCache."$($Miner_Name)_$($Algorithm_Norm_0)_HashRate".Week)}
-					    API            = "Claymore"
+					    API            = "TTminerWrapper"
 					    Port           = $Miner_Port                
 					    Uri            = $Uri
                         FaultTolerance = $_.FaultTolerance

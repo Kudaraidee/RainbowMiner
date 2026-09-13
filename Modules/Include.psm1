@@ -35,7 +35,7 @@ function Initialize-Session {
         $Session.UnixEpoch          = [DateTime]::new(1970, 1, 1, 0, 0, 0, 0, ([System.DateTimeKind]::Utc))
 
         Set-Variable RegexAlgoHasEthproxy -Option Constant -Scope Global -Value "^Etc?hash|ProgPow|^Meraki|UbqHash"
-        Set-Variable RegexAlgoHasDAGSize -Option Constant -Scope Global -Value "^Etc?hash|^KawPow|ProgPow|^FiroPow|^MeowPow|^Meraki|^NexaPow|^SccPow|UbqHash|Octopus"
+        Set-Variable RegexAlgoHasDAGSize -Option Constant -Scope Global -Value "^Etc?hash|^KawPow|ProgPow|^FiroPow|^MeowPow|^Meraki|^NexaPow|^SccPow|UbqHash|Octopus|^Abelian|Autolykos2|^FishHash|^PhiHash"
         Set-Variable RegexAlgoIsEthash -Option Constant -Scope Global -Value "^Etc?hash|UbqHash"
         Set-Variable RegexAlgoIsProgPow -Option Constant -Scope Global -Value "^KawPow|ProgPow|^FiroPow|^MeowPow|^Meraki|^NexaPow|^SccPow|Octopus"
     }
@@ -124,85 +124,164 @@ function Set-OsFlags {
     $Global:OsFlagsSet = $true
 }
 
-function Get-LinuxDistroInfo {
-    $distroName = $null
-    $distroVersion = $null
+function Update-HelperBinaries {
+    # Syncs the helper binaries staged in .\Includes\dist to their live positions (the
+    # staged paths mirror the install-relative layout). The release archives keep these
+    # files out of positions that are write-locked while RainbowMiner or 7z.exe runs, so
+    # in-place update extractions succeed with exit code 0. Windows only. Must work before
+    # Set-OsFlags/Initialize-Session have run, so it detects the OS itself and only uses
+    # Write-Host for output.
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $false)]
+        [String]$RootPath = ""
+    )
 
-    # Function to extract information from key-value pairs in a file
-    function ParseKeyValueFile {
-        param (
-            [string]$FilePath,
-            [string[]]$Keys
-        )
-        $result = @{}
-        if (Test-Path $FilePath) {
-            $content = Get-Content $FilePath | ForEach-Object {
-                $parts = $_ -split '='
-                $key = $parts[0]
-                $value = $parts[1] -replace '"', '' -replace '\s+$', '' # remove quotes and trailing spaces
-                if ($Keys -contains $key) {
-                    $result[$key] = $value
+    if ([System.Environment]::OSVersion.Platform -ne "Win32NT") {return}
+
+    if (-not $RootPath) {$RootPath = $PWD.Path}
+
+    $DistPath = Join-Path $RootPath "Includes\dist"
+
+    if (-not (Test-Path $DistPath)) {return}
+
+    try {
+        $DistFullPath = (Get-Item $DistPath).FullName.TrimEnd("\")
+
+        Get-ChildItem $DistFullPath -Recurse -File -ErrorAction Stop | Foreach-Object {
+            $FileNameTo = Join-Path $RootPath $_.FullName.Substring($DistFullPath.Length + 1)
+            $CopyNeeded = $true
+            if (Test-Path $FileNameTo) {
+                try {
+                    if ((Get-FileHash $FileNameTo -Algorithm MD5).Hash -eq (Get-FileHash $_.FullName -Algorithm MD5).Hash) {$CopyNeeded = $false}
+                } catch {
+                }
+            }
+            if ($CopyNeeded) {
+                Write-Host "Update $FileNameTo"
+                $FileDirTo = Split-Path $FileNameTo
+                if ($FileDirTo -and -not (Test-Path $FileDirTo)) {New-Item $FileDirTo -ItemType "directory" -Force > $null}
+                $RetryLock = 20
+                $IsLocked  = $true
+                do {
+                    try {
+                        Copy-Item -Path $_.FullName -Destination $FileNameTo -Force -ErrorAction Stop
+                        $IsLocked = $false
+                    } catch {
+                        $RetryLock--
+                        if ($RetryLock -gt 0) {Start-Sleep -Milliseconds 250}
+                    }
+                } while ($IsLocked -and ($RetryLock -gt 0))
+                if ($IsLocked) {
+                    Write-Host "WARNING: could not update $FileNameTo - the file is in use and will be synced on the next start" -ForegroundColor Yellow
                 }
             }
         }
+    } catch {
+        Write-Host "WARNING: helper binary sync failed: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+}
+
+function Get-LinuxDistroInfo {
+    $distroName     = $null
+    $distroVersion  = $null
+    $distroCodename = $null
+
+    function ParseKeyValueFile {
+        param(
+            [Parameter(Mandatory)][string]$FilePath,
+            [Parameter(Mandatory)][string[]]$Keys
+        )
+
+        $result = @{}
+        if (-not (Test-Path $FilePath)) { return $result }
+
+        foreach ($line in (Get-Content $FilePath -ErrorAction SilentlyContinue)) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            if ($line -match '^\s*#') { continue }
+            if ($line -notmatch '=') { continue }
+
+            $parts = $line -split '=', 2
+            $key   = $parts[0].Trim()
+            if ($Keys -notcontains $key) { continue }
+
+            $value = $parts[1].Trim()
+
+            # Remove surrounding quotes if present (supports "..." or '...')
+            if (($value.StartsWith('"') -and $value.EndsWith('"')) -or
+                ($value.StartsWith("'") -and $value.EndsWith("'"))) {
+                $value = $value.Substring(1, $value.Length - 2)
+            }
+
+            $result[$key] = $value
+        }
+
         return $result
     }
 
     try {
-
-        # 1. Try /etc/os-release
+        # 1. /etc/os-release (best source on most modern distros)
         if (Test-Path "/etc/os-release") {
-            $osRelease = ParseKeyValueFile "/etc/os-release" @('NAME', 'VERSION_ID')
-            if ($osRelease['NAME']) {
-                $distroName = $osRelease['NAME']
-            }
-            if ($osRelease['VERSION_ID']) {
-                $distroVersion = $osRelease['VERSION_ID']
-            }
+            $osRelease = ParseKeyValueFile "/etc/os-release" @(
+                'NAME','VERSION_ID','VERSION_CODENAME','UBUNTU_CODENAME'
+            )
+
+            if ($osRelease['NAME'])        { $distroName    = $osRelease['NAME'] }
+            if ($osRelease['VERSION_ID'])  { $distroVersion = $osRelease['VERSION_ID'] }
+
+            # Prefer VERSION_CODENAME; fallback to UBUNTU_CODENAME
+            if ($osRelease['VERSION_CODENAME'])      { $distroCodename = $osRelease['VERSION_CODENAME'] }
+            elseif ($osRelease['UBUNTU_CODENAME'])   { $distroCodename = $osRelease['UBUNTU_CODENAME'] }
         }
 
-        # 2. Try /etc/lsb-release (common on Ubuntu and some Debian derivatives)
+        # 2. /etc/lsb-release (Ubuntu and some derivatives)
         elseif (Test-Path "/etc/lsb-release") {
-            $lsbRelease = ParseKeyValueFile "/etc/lsb-release" @('DISTRIB_ID', 'DISTRIB_RELEASE')
-            if ($lsbRelease['DISTRIB_ID']) {
-                $distroName = $lsbRelease['DISTRIB_ID']
-            }
-            if ($lsbRelease['DISTRIB_RELEASE']) {
-                $distroVersion = $lsbRelease['DISTRIB_RELEASE']
-            }
+            $lsbRelease = ParseKeyValueFile "/etc/lsb-release" @(
+                'DISTRIB_ID','DISTRIB_RELEASE','DISTRIB_CODENAME'
+            )
+
+            if ($lsbRelease['DISTRIB_ID'])        { $distroName     = $lsbRelease['DISTRIB_ID'] }
+            if ($lsbRelease['DISTRIB_RELEASE'])   { $distroVersion  = $lsbRelease['DISTRIB_RELEASE'] }
+            if ($lsbRelease['DISTRIB_CODENAME'])  { $distroCodename = $lsbRelease['DISTRIB_CODENAME'] }
         }
 
-        # 3. Try /etc/debian_version (specific to Debian)
+        # 3. Debian legacy fallback (codename usually not available from this file alone)
         elseif (Test-Path "/etc/debian_version") {
             $distroName = "Debian"
-            $distroVersion = Get-Content "/etc/debian_version" -Raw
+            $distroVersion = (Get-Content "/etc/debian_version" -Raw).Trim()
+
+            # If you want, you can optionally set distroCodename = $null here (already is)
         }
 
-        # 4. Try /etc/redhat-release (specific to Red Hat-based systems)
+        # 4. RedHat-based
         elseif (Test-Path "/etc/redhat-release") {
-            $content = Get-Content "/etc/redhat-release" -Raw
+            $content = (Get-Content "/etc/redhat-release" -Raw).Trim()
             if ($content -match "(.+)\srelease\s([\d\.]+)") {
                 $distroName = $matches[1].Trim()
                 $distroVersion = $matches[2].Trim()
             }
         }
 
-        # 5. Fallback to /etc/issue if others are not available
+        # 5. /etc/issue fallback
         elseif (Test-Path "/etc/issue") {
-            $content = Get-Content "/etc/issue" -Raw
+            $content = (Get-Content "/etc/issue" -Raw).Trim()
             if ($content -match "(.+)\s([\d\.]+)") {
                 $distroName = $matches[1].Trim()
                 $distroVersion = $matches[2].Trim()
             }
         }
-    } catch {
+    }
+    catch {
     }
 
-    # Return formatted result
+    $info = @($distroName, $distroVersion) -ne $null -join ' '
+    if ($distroCodename) { $info = "$info ($distroCodename)" }
+
     [PSCustomObject]@{
-        distroName = $distroName
-        distroVersion = $distroVersion
-        distroInfo = "$distroName $distroVersion"
+        distroName     = $distroName
+        distroVersion  = $distroVersion
+        distroCodename = $distroCodename
+        distroInfo     = $info
     }
 }
 
@@ -384,7 +463,7 @@ function Get-UnprofitableCpuAlgos {
 
     if ($Request -and $Request.Count -gt 10) {
         Set-ContentJson -PathToFile ".\Data\unprofitable-cpu.json" -Data $Request -MD5hash $Global:GlobalUnprofitableCpuAlgosHash > $null
-    } elseif (Test-Path ".\Data\unprofitable.json") {
+    } elseif (Test-Path ".\Data\unprofitable-cpu.json") {
         try{
             $Request = Get-ContentByStreamReader ".\Data\unprofitable-cpu.json" | ConvertFrom-Json -ErrorAction Ignore
         } catch {
@@ -498,12 +577,6 @@ Function Write-Log {
     }
     Process {
 
-        $filename = ".\Logs\RainbowMiner_$(Get-Date -Format "yyyy-MM-dd").txt"
-
-        if (-not (Test-Path "Stats\Pools")) {New-Item "Stats\Pools" -ItemType "directory" > $null}
-        if (-not (Test-Path "Stats\Miners")) {New-Item "Stats\Miners" -ItemType "directory" > $null}
-        if (-not (Test-Path "Stats\Totals")) {New-Item "Stats\Totals" -ItemType "directory" > $null}
-
         $Color = ""
 
         switch ($Level) {
@@ -548,36 +621,37 @@ Function Write-Log {
         if (-not $NoLog) {
             if ($Session.Debug) {
                 $grow = Test-CacheGrow
-                $grow_out = @()
+                $grow_out = [System.Collections.Generic.List[string]]::new()
                 foreach ( $item in $grow ) {
-                    $grow_out += "$($item.Name) $(if ($item.Diff -ge 0) {"+"})$($item.Diff)"
+                    [void]$grow_out.Add("$($item.Name) $(if ($item.Diff -ge 0) {"+"})$($item.Diff)")
                 }
                 if ($grow_out.Count) {
-                    $Message += " " + ($grow_out -join ", ")
+                    $Message = "$($Message) $($grow_out -join ", ")"
                 }
+                $grow_out = $null
             }
-            # Generate a unique mutex name for the log directory
-            $mutexName = "RBM" + (Get-MD5Hash ([io.fileinfo](".\Logs")).FullName)
-            $mutex = [System.Threading.Mutex]::new($false, $mutexName)
+            # Mutex object and resolved log path are cached per runspace; the mutex name is derived from the path, so all runspaces share the same OS mutex
+            if ($Script:LogFileMutex -eq $null) {
+                $Script:LogsPathAbs  = $Global:ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath(".\Logs")
+                $Script:LogFileMutex = [System.Threading.Mutex]::new($false, "RBM$(Get-MD5Hash $Script:LogsPathAbs)")
+                $Script:LogUtf8NoBom = [System.Text.UTF8Encoding]::new($false)
+            }
             try {
                 # Attempt to acquire the mutex, waiting up to 2 seconds
-                if ($mutex.WaitOne(2000)) {
+                if ($Script:LogFileMutex.WaitOne(2000)) {
                     try {
-                        "[$(Get-Date -Format "yyyy-MM-dd HH:mm:ss")] $LevelText $Message" | Out-File $filename -Append -Encoding utf8
+                        [System.IO.File]::AppendAllText((Join-Path $Script:LogsPathAbs "RainbowMiner_$(Get-Date -Format "yyyy-MM-dd").txt"), "[$(Get-Date -Format "yyyy-MM-dd HH:mm:ss")] $LevelText $Message$([Environment]::NewLine)", $Script:LogUtf8NoBom)
                     }
                     finally {
-                        $mutex.ReleaseMutex()
+                        $Script:LogFileMutex.ReleaseMutex()
                     }
                 }
                 else {
-                    Write-Error "Log file is locked, unable to write message to $FileName."
+                    Write-Error "Log file is locked, unable to write message."
                 }
             }
             catch {
-                Write-Error "Error acquiring mutex: $($_.Exception.Message)"
-            }
-            finally {
-                $mutex.Dispose()
+                Write-Error "Error writing to log file: $($_.Exception.Message)"
             }
         }
     }
@@ -635,7 +709,7 @@ function Get-ChildItemContent {
         if ($_.Extension -eq ".ps1") {
             $Content = & {
                 foreach ($k in $Parameters.Keys) {Set-Variable $k $Parameters.$k}
-                & $_.FullName @Parameters                
+                & $_.FullName @Parameters
             }
         }
         elseif ($Quick) {
@@ -647,7 +721,7 @@ function Get-ChildItemContent {
         }
         else {
             $Content = & {
-                foreach ($k in $Parameters.Keys) {Set-Variable $k $Parameters.$k}                
+                foreach ($k in $Parameters.Keys) {Set-Variable $k $Parameters.$k}
                 try {
                     (Get-ContentByStreamReader $_.FullName | ConvertFrom-Json -ErrorAction Stop) | ForEach-Object {Invoke-ExpressionRecursive $_}
                 }
@@ -858,7 +932,11 @@ function Invoke-Exe {
         [Parameter(Mandatory = $false)]
         [Switch]$AutoWorkingDirectory = $false,
         [Parameter(Mandatory = $false)]
-        [Switch]$Runas = $false
+        [Switch]$Runas = $false,
+        [Parameter(Mandatory = $false)]
+        [Switch]$KillOnTimeout = $false,
+        [Parameter(Mandatory = $false)]
+        [Switch]$NoCrashDialog = $false
         )
 
     $psi = $null
@@ -882,12 +960,47 @@ function Invoke-Exe {
 
             $process = [System.Diagnostics.Process]::New()
             $process.StartInfo = $psi
-            [void]$process.Start()
 
-            $out = $process.StandardOutput.ReadToEnd()
-            $process.WaitForExit($WaitForExit*1000)>$null
+            if ($NoCrashDialog -and $IsWindows) {
+                # a child dying on an access violation (e.g. a miner exe probing
+                # GPU devices) raises a blocking WER dialog; the error mode is
+                # inherited at CreateProcess time, so it only needs to span Start()
+                if (-not ("RBMNative.ErrorMode" -as [Type])) {
+                    Add-Type -Namespace RBMNative -Name ErrorMode -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint SetErrorMode(uint uMode);' -ErrorAction Ignore
+                }
+                $oldErrorMode = $null
+                try {$oldErrorMode = [RBMNative.ErrorMode]::SetErrorMode(0x8003)} catch {}
+                try {
+                    [void]$process.Start()
+                } finally {
+                    if ($oldErrorMode -ne $null) {try {[RBMNative.ErrorMode]::SetErrorMode($oldErrorMode)>$null} catch {}}
+                }
+            } else {
+                [void]$process.Start()
+            }
+
+            # drain both pipes async: a child that fills the never-read stderr pipe
+            # blocks and never closes stdout, deadlocking a sync ReadToEnd() no
+            # matter the timeout. Without -KillOnTimeout the child may run as long
+            # as it needs (legacy semantics); with it, WaitForExit is a hard bound
+            # and the partial output is kept
+            $outTask = $process.StandardOutput.ReadToEndAsync()
+            $errTask = $process.StandardError.ReadToEndAsync()
+            if ($process.WaitForExit([Math]::Max($WaitForExit,1)*1000)) {
+                $out = $outTask.Result
+            } elseif ($KillOnTimeout) {
+                try {$process.Kill()} catch {}
+                $process.WaitForExit(1000)>$null
+                # a grandchild inheriting the stdout handle keeps the pipe open
+                # beyond the child's exit - bound the drain, too
+                $out = if ($outTask.Wait(2000)) {$outTask.Result} else {""}
+            } else {
+                $out = $outTask.Result
+                $process.WaitForExit([Math]::Max($WaitForExit,1)*1000)>$null
+            }
+            $errTask.Wait(500)>$null
             if ($ExpandLines) {foreach ($line in @($out -split '\n')){if (-not $ExcludeEmptyLines -or $line.Trim() -ne ''){$line -replace '\r'}}} else {$out}
-            $Global:LASTEXEEXITCODE = $process.ExitCode
+            $Global:LASTEXEEXITCODE = if ($process.HasExited) {$process.ExitCode} else {-1}
         } else {
             if ($FilePath -match "IncludesLinux") {$FilePath = Get-Item $FilePath | Select-Object -ExpandProperty FullName}
             if (Test-OCDaemon) {
@@ -974,8 +1087,21 @@ function Invoke-Process {
 function Get-MyIP {
     if ($IsWindows -and ($cmd = Get-Command "ipconfig" -ErrorAction Ignore)) {
         $IpcResult = Invoke-Exe $cmd.Source -ExpandLines | Where-Object {$_ -match 'IPv4.+\s(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'} | Foreach-Object {$Matches[1]}
-        if ($IpcResult.Count -gt 1 -and (Get-Command "Get-NetRoute" -ErrorAction Ignore) -and ($Trunc = Get-NetRoute -DestinationPrefix 0.0.0.0/0 | Select-Object -ExpandProperty NextHop | Where-Object {$_ -match '^(\d{1,3}\.\d{1,3}\.)'} | Foreach-Object {$Matches[1]} | Select-Object -First 1)) {
-            $IpcResult = $IpcResult | Where-Object {$_ -match "^$($Trunc)"}
+        if ($IpcResult.Count -gt 1) {
+            # find the default gateway's leading octets via .NET: a Get-Command "Get-NetRoute" probe would autoload the NetTCPIP CDXML module (~8 MB)
+            $Trunc = $null
+            try {
+                foreach ($NetIf in [System.Net.NetworkInformation.NetworkInterface]::GetAllNetworkInterfaces()) {
+                    if ($Trunc -eq $null -and $NetIf.OperationalStatus -eq [System.Net.NetworkInformation.OperationalStatus]::Up) {
+                        foreach ($GwAddr in $NetIf.GetIPProperties().GatewayAddresses) {
+                            if ("$($GwAddr.Address)" -match '^(\d{1,3}\.\d{1,3}\.)') {$Trunc = $Matches[1];break}
+                        }
+                    }
+                }
+            } catch {if ($Error.Count){$Error.RemoveAt(0)}}
+            if ($Trunc) {
+                $IpcResult = $IpcResult | Where-Object {$_ -match "^$($Trunc)"}
+            }
         }
         $IpcResult | Select-Object -First 1
     } elseif ($IsLinux) {
@@ -1000,59 +1126,77 @@ function Get-CoinName {
 }
 
 function Get-Algorithm {
-    [CmdletBinding()]
+    # Hottest shared helper: called thousands of times per round from every miner
+    # module and many pools. Deliberately plain parameters - cmdlet binding costs
+    # more than the body (see Get-PoolAlgorithmKeys in MinersLib.psm1) - plus a
+    # per-runspace result memo for calls without a CoinSymbol. The memo is bound
+    # to the identity of the $Session.GlobalAlgorithms hashtable: any database
+    # reload (algorithms.json change, -Force, Reset-Session) creates a new object
+    # and thereby drops the memo. Implementation sticks to language intrinsics
+    # (hashtable indexer, -eq) - .NET method calls like ContainsKey/TryGetValue
+    # cost an order of magnitude more under pwsh. The memo hashtable uses an
+    # ORDINAL comparer on purpose: unknown algorithms fall through to ToTitleCase,
+    # whose result depends on the input casing. CoinSymbol calls are never
+    # memoized - their result depends on GlobalEthDAGSizes, which refreshes
+    # independently of the algorithm database.
     param(
-        [Parameter(
-            Position = 0,
-            ParameterSetName = '',   
-            ValueFromPipeline = $True,
-            Mandatory = $false)]
         [String]$Algorithm = "",
-        [Parameter(Mandatory = $false)]
         [String]$CoinSymbol = ""
     )
-    if ($Algorithm -eq '*') {$Algorithm}
-    elseif ($Algorithm -match "[,;]") {@($Algorithm -split "\s*[,;]+\s*") | Foreach-Object {Get-Algorithm $_}}
-    else {
-        if (-not $Session.GlobalAlgorithms) {Get-Algorithms -Silent}
-        $Algorithm = $Algorithm -replace "[^a-z0-9]+"
-        if ($Session.GlobalAlgorithms.ContainsKey($Algorithm)) {
-            $Algorithm = $Session.GlobalAlgorithms[$Algorithm]
-            if ($CoinSymbol -ne "" -and $Algorithm -in @("Ethash","KawPOW") -and ($DAGSize = Get-EthDAGSize -CoinSymbol $CoinSymbol -Minimum 1) -le 5) {
-                if ($DAGSize -le 2) {$Algorithm = "$($Algorithm)2g"}
-                elseif ($DAGSize -le 3) {$Algorithm = "$($Algorithm)3g"}
-                elseif ($DAGSize -le 4) {$Algorithm = "$($Algorithm)4g"}
-                elseif ($DAGSize -le 5) {$Algorithm = "$($Algorithm)5g"}
-            }
-        } else {
-            $Algorithm = (Get-Culture).TextInfo.ToTitleCase($Algorithm)
+    if ($Algorithm -eq '*') {return $Algorithm}
+
+    $DB = $Session.GlobalAlgorithms
+
+    if ($CoinSymbol -eq "") {
+        $Memo = $Script:GetAlgorithmMemo
+        if ($Memo -ne $null -and $Script:GetAlgorithmMemoDB -eq $DB) {
+            $Result = $Memo[$Algorithm]
+            if ($Result -ne $null) {return $Result}
         }
-        $Algorithm
     }
+
+    if ($Algorithm -match "[,;]") {return @($Algorithm -split "\s*[,;]+\s*" | Foreach-Object {Get-Algorithm $_})}
+
+    if (-not $DB) {Get-Algorithms -Silent;$DB = $Session.GlobalAlgorithms}
+    $Key = $Algorithm -replace "[^a-z0-9]+"
+    $Result = $DB[$Key]
+    if ($Result -ne $null) {
+        if ($CoinSymbol -ne "" -and ($Result -eq "Ethash" -or $Result -eq "KawPOW") -and ($DAGSize = Get-EthDAGSize -CoinSymbol $CoinSymbol -Minimum 1) -le 5) {
+            if ($DAGSize -le 2) {$Result = "$($Result)2g"}
+            elseif ($DAGSize -le 3) {$Result = "$($Result)3g"}
+            elseif ($DAGSize -le 4) {$Result = "$($Result)4g"}
+            elseif ($DAGSize -le 5) {$Result = "$($Result)5g"}
+        }
+    } else {
+        $Result = (Get-Culture).TextInfo.ToTitleCase($Key)
+    }
+    if ($CoinSymbol -eq "") {
+        if ($Script:GetAlgorithmMemoDB -ne $DB) {
+            $Script:GetAlgorithmMemo = [hashtable]::new([System.StringComparer]::Ordinal)
+            $Script:GetAlgorithmMemoDB = $DB
+        }
+        $Script:GetAlgorithmMemo[$Algorithm] = $Result
+    }
+    $Result
 }
 
 function Get-Coin {
-    [CmdletBinding()]
+    # Deliberately plain parameters (see Get-PoolAlgorithmKeys in MinersLib.psm1).
+    # Intentionally NOT memoized: the returned object is the shared GlobalCoinsDB
+    # entry and the Algo rewrite below must keep re-evaluating against the current
+    # DAG sizes on every call.
     param(
-        [Parameter(
-            Position = 0,
-            ParameterSetName = '',   
-            ValueFromPipeline = $True,
-            Mandatory = $false)]
         [String]$CoinSymbol = "",
-        [Parameter(Mandatory = $false)]
         [String]$Algorithm = ""
     )
-    if ($CoinSymbol -eq '*') {$CoinSymbol}
-    elseif ($CoinSymbol -match "[,;]") {@($CoinSymbol -split "\s*[,;]+\s*") | Foreach-Object {Get-Coin $_}}
-    else {
-        if (-not $Session.GlobalCoinsDB) {Get-CoinsDB -Silent}
-        $CoinSymbol = ($CoinSymbol -replace "[^A-Z0-9`$-]+").ToUpper()
-        $Coin = if ($Session.GlobalCoinsDB.ContainsKey($CoinSymbol)) {$Session.GlobalCoinsDB[$CoinSymbol]}
-                elseif ($Algorithm -ne "" -and $Session.GlobalCoinsDB.ContainsKey("$CoinSymbol-$Algorithm")) {$Session.GlobalCoinsDB["$CoinSymbol-$Algorithm"]}
-        if ($Coin.Algo -in @("Ethash","KawPOW")) {$Coin.Algo = Get-Algorithm $Coin.Algo -CoinSymbol $CoinSymbol}
-        $Coin
-    }
+    if ($CoinSymbol -eq '*') {return $CoinSymbol}
+    if ($CoinSymbol -match "[,;]") {return @($CoinSymbol -split "\s*[,;]+\s*" | Foreach-Object {Get-Coin $_})}
+    if (-not $Session.GlobalCoinsDB) {Get-CoinsDB -Silent}
+    $CoinSymbol = ($CoinSymbol -replace "[^A-Z0-9`$-]+").ToUpper()
+    $Coin = $Session.GlobalCoinsDB[$CoinSymbol]
+    if ($Coin -eq $null -and $Algorithm -ne "") {$Coin = $Session.GlobalCoinsDB["$CoinSymbol-$Algorithm"]}
+    if ($Coin -ne $null -and ($Coin.Algo -eq "Ethash" -or $Coin.Algo -eq "KawPOW")) {$Coin.Algo = Get-Algorithm $Coin.Algo -CoinSymbol $CoinSymbol}
+    $Coin
 }
 
 function Get-MappedAlgorithm {
@@ -1109,20 +1253,93 @@ function Get-EquihashCoinPers {
     if ($Coin -and $Session.GlobalEquihashCoins.ContainsKey($Coin)) {$Session.GlobalEquihashCoins[$Coin]} else {$Default}
 }
 
-function Get-EthDAGSize {
+function Get-AlgorithmMemory {
+    # Minimum system RAM in GB an algorithm needs on a CPU, from Data\algorithmmemory.json.
+    # 0 = unknown/unconstrained. The OS and RainbowMiner overhead is NOT included here,
+    # the caller adds it (config.txt: MinFreeMemoryGB).
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $false)]
-        [String]$CoinSymbol = "",
+        [String]$Algorithm = ""
+    )
+    if (-not $Algorithm) {return 0.0}
+    if ($Global:AlgorithmMemory -eq $null) {
+        $Global:AlgorithmMemory = @{}
+        try {
+            $Data = Get-ContentByStreamReader ".\Data\algorithmmemory.json" | ConvertFrom-Json -ErrorAction Stop
+            foreach ($p in $Data.PSObject.Properties) {
+                if ($p.Name -notmatch '^_') {$Global:AlgorithmMemory[$p.Name] = [double]$p.Value}
+            }
+        } catch {
+            if ($Error.Count) {$Error.RemoveAt(0)}
+            Write-Log -Level Warn "Data\algorithmmemory.json is missing or invalid, skipping the memory check"
+        }
+    }
+    if ($Global:AlgorithmMemory.ContainsKey($Algorithm)) {[double]$Global:AlgorithmMemory[$Algorithm]} else {0.0}
+}
+
+function Test-AlgorithmMemory {
+    # $true if the algorithm fits into physical RAM, leaving $MinFreeGB for the OS and
+    # RainbowMiner. Fails open: if the requirement or the total RAM is unknown, allow it.
+    # Deliberately checks TOTAL physical memory, not free memory: miners allocate their
+    # dataset once and free memory swings while mining. It also deliberately ignores the
+    # page/swap file - the miner would "succeed" and then thrash.
+    [CmdletBinding()]
+    param(
         [Parameter(Mandatory = $false)]
         [String]$Algorithm = "",
         [Parameter(Mandatory = $false)]
+        [Double]$MinFreeGB = 0.0
+    )
+    $NeedGB = Get-AlgorithmMemory $Algorithm
+    if ($NeedGB -le 0) {return $true}
+    # SysInfo is filled by a background job and on Linux by an external script, so it may
+    # be missing, empty or not even numeric. Never let that throw, and never act on an
+    # implausible value: no machine that runs RainbowMiner has less than half a GB
+    $TotalGB = 0.0
+    try {$TotalGB = [double]$Session.SysInfo.Memory.TotalGB} catch {$TotalGB = 0.0}
+    if ($TotalGB -lt 0.5) {return $true}
+    ($NeedGB + $MinFreeGB) -le $TotalGB
+}
+
+function Get-DeviceUsableVRAMGB {
+    # Usable VRAM of a GPU device in GB, honoring (in this order) the
+    # GPUReservedVRAMGB config override ("" = auto, 0 = no reservation, else a
+    # flat per-GPU reservation in GB) and the reservation measured at startup by
+    # Update-DeviceVRAMReservation (DeviceLib.psm1). Returns $null when neither
+    # is available - callers then apply their historic static fallback
+    # (Test-VRAM: 0.865 factor / 0.25GB offset; MiningRigRentals: 0.8652).
+    # Lives in Include.psm1 on purpose: the MiningRigRentals pool code calls it
+    # and must not depend on MinersLib.psm1.
+    param($Device)
+    if (-not $Device.OpenCL -or -not $Device.OpenCL.GlobalMemsize) {return $null}
+    $ReservedGB = $null
+    $CfgValue = if ($Session.Config) {"$($Session.Config.GPUReservedVRAMGB)".Trim()} else {""}
+    if ($CfgValue -match "^\d+(\.\d+)?$") {$ReservedGB = [double]$CfgValue}
+    elseif ($Device.ReservedVRAMGB -ne $null) {$ReservedGB = [double]$Device.ReservedVRAMGB}
+    if ($ReservedGB -ne $null) {[Math]::Round([Math]::Max(($Device.OpenCL.GlobalMemsize / 1gb) - $ReservedGB, 0), 3)}
+}
+
+function Get-EthDAGSize {
+    # Hot path: called per pool algorithm key inside every DAG miner module's
+    # loops and reentrantly from Get-Algorithm. Deliberately plain parameters
+    # (see Get-PoolAlgorithmKeys in MinersLib.psm1). The parameter ORDER is part
+    # of the contract - some callers pass the coin symbol positionally.
+    param(
+        [String]$CoinSymbol = "",
+        [String]$Algorithm = "",
         [Double]$Minimum = 1
     )
     if (-not $Session.GlobalEthDAGSizes) {Get-EthDAGSizes -Silent}
-    if     ($CoinSymbol -and $Session.GlobalEthDAGSizes.$CoinSymbol -ne $null)          {$Session.GlobalEthDAGSizes.$CoinSymbol} 
-    elseif ($Algorithm -and $Session.GlobalAlgorithms2EthDagSizes.$Algorithm -ne $null) {$Session.GlobalAlgorithms2EthDagSizes.$Algorithm}
-    else   {$Minimum}
+    if ($CoinSymbol) {
+        $Value = $Session.GlobalEthDAGSizes[$CoinSymbol]
+        if ($Value -ne $null) {return $Value}
+    }
+    if ($Algorithm) {
+        $Value = $Session.GlobalAlgorithms2EthDagSizes[$Algorithm]
+        if ($Value -ne $null) {return $Value}
+    }
+    $Minimum
 }
 
 function Get-EthDAGSizeMax {
@@ -1254,42 +1471,76 @@ function Get-EthDAGSizes {
 
     if (-not $Session.GlobalCoinsDB) {Get-CoinsDB -Silent}
 
-    $Request = [PSCustomObject]@{}
+    $Request = $null
 
     if ($EnableRemoteUpdate) {
         try {
             $Request = Invoke-GetUrlAsync "https://api.rbminer.net/data/ethdagsizes.json" -cycletime 3600 -Jobkey "ethdagsizes"
         }
         catch {
-            Write-Log -Level Warn "EthDAGsize API failed. "
+            Write-Log -Level Warn "EthDAGsize API failed: $($_.Exception.Message)"
+            $Request = $null
         }
     }
 
-    if ($Request -and $Request.PSObject.Properties.Name.Count -gt 10) {
-        Set-ContentJson -PathToFile ".\Data\ethdagsizes.json" -Data $Request -MD5hash (Get-ContentDataMD5hash $Session.GlobalEthDAGSizes) > $null
-    } else {
-        $Request = Get-ContentByStreamReader ".\Data\ethdagsizes.json" | ConvertFrom-Json -ErrorAction Ignore
-    }
-    $Session.GlobalEthDAGSizes = [PSCustomObject]@{}
-    $Session.GlobalAlgorithms2EthDagSizes = [PSCustomObject]@{}
+    $RequestFields = if ($Request -eq $null) {0} else {($Request.PSObject.Properties.Name | Measure-Object).Count}
 
-    $Request.PSObject.Properties | Foreach-Object {$Session.GlobalEthDAGSizes | Add-Member $_.Name ($_.Value/1Gb)}
+    if ($RequestFields -gt 10) {
+        # the guard has to hash what is actually written: $Session.GlobalEthDAGSizes holds
+        # the GB-normalized values, so it could never match the raw byte values in $Request
+        # and the file was rewritten on every cycle
+        $RequestHash = Get-ContentDataMD5hash $Request
+        Set-ContentJson -PathToFile ".\Data\ethdagsizes.json" -Data $Request -MD5hash $Session.GlobalEthDAGSizesHash > $null
+        $Session.GlobalEthDAGSizesHash = $RequestHash
+    } else {
+        if ($EnableRemoteUpdate) {
+            # a response that failed ConvertFrom-Json comes back as a string and is cached
+            # re-encoded, so every later read returns a string, too - without this warning
+            # the database silently stays at whatever is on disk
+            $RequestInfo = if ($Request -eq $null) {"empty response"} else {"$($Request.GetType().Name) with $($RequestFields) field(s)"}
+            Write-Log -Level Warn "EthDAGsize API returned no usable data ($($RequestInfo)), keeping the local database. "
+        }
+        $Request = $null
+        try {
+            $Request = Get-ContentByStreamReader ".\Data\ethdagsizes.json" | ConvertFrom-Json -ErrorAction Stop
+        } catch {
+            Write-Log -Level Warn "EthDAGsize database is corrupt. "
+            $Request = $null
+        }
+        $RequestFields = if ($Request -eq $null) {0} else {($Request.PSObject.Properties.Name | Measure-Object).Count}
+        $Session.GlobalEthDAGSizesHash = ""
+    }
+
+    if ($RequestFields -le 10) {
+        # neither source delivered: keep the sizes that are already in memory instead of
+        # dropping every DAG size for the rest of the session
+        if (-not $Session.GlobalEthDAGSizes) {$Session.GlobalEthDAGSizes = [hashtable]@{}}
+        if (-not $Session.GlobalAlgorithms2EthDagSizes) {$Session.GlobalAlgorithms2EthDagSizes = [hashtable]@{}}
+        if (-not $Session.GlobalEthDAGSizes.Count) {Write-Log -Level Warn "EthDAGsize database is empty. "}
+        if (-not $Silent) {$Session.GlobalEthDAGSizes}
+        return
+    }
+
+    $Session.GlobalEthDAGSizes = @{}
+    $Session.GlobalAlgorithms2EthDagSizes = @{}
+
+    $Request.PSObject.Properties | Foreach-Object {$Session.GlobalEthDAGSizes[$_.Name] = $_.Value/1Gb}
 
     $SingleAlgos = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $Session.GlobalCoinsDB.Values | Group-Object -Property Algo | Where-Object {$_.Count -eq 1 -or $_.Name -eq "FiroPow" -or $_.Name -eq "ProgPowEpic" -or $_.Name -eq "ProgPowZ"} | Foreach-Object {[void]$SingleAlgos.Add($_.Name)}
 
     foreach ( $Coin in $Session.GlobalCoinsDB.Keys ) {
         $Coin = $Coin -replace "-.+$"
-        if (-not $Session.GlobalEthDAGSizes.$Coin) { continue }
+        if (-not $Session.GlobalEthDAGSizes[$Coin]) { continue }
         $Algo = $Session.GlobalCoinsDB.$Coin.Algo
         if (-not $SingleAlgos.Contains($Algo)) { continue }
         if ($Algo -notmatch $Global:RegexAlgoHasDAGSize) { continue }
         if ($Session.GlobalCoinsDB.$Coin.Name -match "testnet") { continue }
-        
-        if (-not $Session.GlobalAlgorithms2EthDagSizes.PSObject.Properties[$Algo]) {
-            $Session.GlobalAlgorithms2EthDagSizes | Add-Member $Algo $Session.GlobalEthDAGSizes.$Coin -Force
-        } elseif ($Session.GlobalAlgorithms2EthDagSizes.$Algo -lt $Session.GlobalEthDAGSizes.$Coin) {
-            $Session.GlobalAlgorithms2EthDagSizes.$Algo = $Session.GlobalEthDAGSizes.$Coin
+
+        if (-not $Session.GlobalAlgorithms2EthDagSizes.ContainsKey($Algo)) {
+            $Session.GlobalAlgorithms2EthDagSizes[$Algo] = $Session.GlobalEthDAGSizes[$Coin]
+        } elseif ($Session.GlobalAlgorithms2EthDagSizes[$Algo] -lt $Session.GlobalEthDAGSizes[$Coin]) {
+            $Session.GlobalAlgorithms2EthDagSizes[$Algo] = $Session.GlobalEthDAGSizes[$Coin]
         }
     }
 
@@ -1615,8 +1866,19 @@ function Get-CPUAffinity {
     elseif ($ToInt) {ConvertTo-CPUAffinity @(Get-CPUAffinity $Threads)}
     else {
         @(if ($Threads -and $Threads -ne $Global:GlobalCPUInfo.RealCores.Count) {
-            $a = $r = 0; $b = [Math]::Max(1,[int]($Global:GlobalCPUInfo.Threads/$Global:GlobalCPUInfo.Cores));
-            for($i=0;$i -lt [Math]::Min($Threads,$Global:GlobalCPUInfo.Threads);$i++) {$a;$c=($a+$b)%$Global:GlobalCPUInfo.Threads;if ($c -lt $a) {$r++;$a=$c+$r}else{$a=$c}}
+            if ($IsLinux) {
+                $i = 0
+                foreach($c in @($Global:GlobalCPUInfo.RealCores + $Global:GlobalCPUInfo.ThreadList)) {
+                    $c
+                    $i++
+                    if ($i -ge $Threads) {
+                        break
+                    }
+                }                
+            } else {
+                $a = $r = 0; $b = [Math]::Max(1,[int]($Global:GlobalCPUInfo.Threads/$Global:GlobalCPUInfo.Cores));
+                for($i=0;$i -lt [Math]::Min($Threads,$Global:GlobalCPUInfo.Threads);$i++) {$a;$c=($a+$b)%$Global:GlobalCPUInfo.Threads;if ($c -lt $a) {$r++;$a=$c+$r}else{$a=$c}}
+            }
         } else {$Global:GlobalCPUInfo.RealCores}) | Sort-Object
     }
 }
@@ -1656,13 +1918,13 @@ function Get-MD5Hash {
 [CmdletBinding()]
 Param(
     [Parameter(
-        Mandatory = $True,
+        Mandatory = $False,
         Position = 0,
         ValueFromPipeline = $True)]
     [string]$value
 )
 
-    $md5 = [System.Security.Cryptography.MD5CryptoServiceProvider]::new()
+    $md5  = [System.Security.Cryptography.MD5CryptoServiceProvider]::new()
     $utf8 = [System.Text.Encoding]::UTF8
 
     try {
@@ -1670,6 +1932,27 @@ Param(
     }
     finally {
         $md5.Dispose()  # Ensure cleanup
+    }
+}
+
+function Get-SHA256Hash {
+[CmdletBinding()]
+Param(
+    [Parameter(
+        Mandatory = $False,
+        Position = 0,
+        ValueFromPipeline = $True)]
+    [string]$value
+)
+
+    $sha  = [System.Security.Cryptography.SHA256CryptoServiceProvider]::new()
+    $utf8 = [System.Text.Encoding]::UTF8
+
+    try {
+        [System.BitConverter]::ToString($sha.ComputeHash($utf8.GetBytes($value))).ToUpper() -replace '-'
+    }
+    finally {
+        $sha.Dispose()  # Ensure cleanup
     }
 }
 
@@ -2045,6 +2328,166 @@ function Get-MinerInstPath {
         if ($Path.StartsWith($Global:MinersInstallationPath) -and $Path.Substring($Global:MinersInstallationPath.Length) -match "^([/\\][^/\\]+)") {"$($Global:MinersInstallationPath)$($Matches[1])"}
         else {Split-Path $Path}
     }
+}
+
+#
+# Custom miners (Config\customminers.config.txt)
+#
+# The definitions are user data: a JSON object keyed by miner name. These helpers
+# live in Include.psm1 on purpose - the miner enumeration runspace
+# (Get-MinersContentRS) and the API threads import Include but not ConfigLib.
+#
+
+# names that were already reported as invalid (warn once per session)
+$Script:CustomMinerWarned = @{}
+
+function Test-CustomMinerName {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $False)]
+        [String]$Name = ""
+    )
+    # letters, digits and underscore only, and the name must not shadow a built-in miner module
+    ($Name -match "^[A-Za-z0-9_]+$") -and -not (Test-Path ".\Miners\$($Name).ps1")
+}
+
+function ConvertTo-CustomMinerNumber {
+    # "1,5" / "1.5" / "" -> [double] or $Default (used for the string-typed config values)
+    param($Value, $Default = $null)
+    $v = "$Value".Trim() -replace ",","." -replace "[^0-9\.]"
+    if ($v -match "^\d*\.?\d+$") {[double]$v} else {$Default}
+}
+
+function Get-CustomMinerPlatform {
+    # Name of the download block of a definition that applies to this rig:
+    # Windows, Linux (x64) or LinuxArm. An x64 Linux build never runs on an ARM
+    # rig, so ARM rigs use the LinuxArm block only. $Session.IsARM is set by
+    # Start-Core; the CPU info fallback serves the miner runspace and harnesses.
+    if (-not $IsLinux) {return "Windows"}
+    if ($Session.IsARM -or $Global:GlobalCPUInfo.Vendor -eq "ARM" -or $Global:GlobalCPUInfo.Features.ARM) {"LinuxArm"} else {"Linux"}
+}
+
+function Get-CustomMinerDefinitions {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $False)]
+        [Switch]$UpdateLastWriteTime,
+        [Parameter(Mandatory = $False)]
+        [Switch]$FromFile
+    )
+
+    # per-round cheap path: Core stores the normalized array in $Session.Config.CustomMiners
+    if (-not $UpdateLastWriteTime -and -not $FromFile -and $Session.Config -and [bool]$Session.Config.PSObject.Properties["CustomMiners"]) {
+        return @($Session.Config.CustomMiners | Select-Object)
+    }
+
+    # indexing a null hashtable with a string key throws on 5.1 and 7 alike
+    if (-not $Session.ConfigFiles -or -not $Session.ConfigFiles.ContainsKey("CustomMiners")) {return @()}
+
+    $PathToFile = $Session.ConfigFiles["CustomMiners"].Path
+    if (-not $PathToFile -or -not (Test-Path $PathToFile)) {return @()}
+
+    $Data = $null
+    try {
+        if ($UpdateLastWriteTime) {
+            $Session.ConfigFiles["CustomMiners"].LastWriteTime = (Get-ChildItem $PathToFile).LastWriteTimeUtc
+        }
+        $Data = Get-ContentByStreamReader $PathToFile | ConvertFrom-Json -ErrorAction Stop
+        $Session.ConfigFiles["CustomMiners"].Healthy = $true
+    } catch {
+        Write-Log -Level Warn "Your $(([IO.FileInfo]$PathToFile).Name) seems to be corrupt. Check for correct JSON format or delete it."
+        $Session.ConfigFiles["CustomMiners"].Healthy = $false
+        return @()
+    }
+
+    if ($Data -eq $null -or $Data -is [string] -or $Data -is [array]) {return @()}
+
+    $Vendors_All = @("AMD","CPU","INTEL","NVIDIA")
+    $DevIdProps  = @("Type_Vendor_Index","Type_PlatformId_Index","Type_Index","Type_Mineable_Index","Index","BusId","PCIBusId","Vendor_Index")
+
+    @(foreach ($p in $Data.PSObject.Properties) {
+        $Name = "$($p.Name)".Trim()
+        $Def  = $p.Value
+
+        if (-not (Test-CustomMinerName $Name)) {
+            if (-not $Script:CustomMinerWarned.ContainsKey($Name)) {
+                $Script:CustomMinerWarned[$Name] = $true
+                Write-Log -Level Warn "Custom miner ""$($Name)"" skipped: the name may contain letters, digits and underscore only and must not equal a built-in miner name"
+            }
+            continue
+        }
+        if ($Def -eq $null -or $Def -is [string] -or $Def -is [array]) {continue}
+
+        $Vendors = @(Get-ConfigArray "$($Def.Vendors)" | Foreach-Object {"$_".Trim().ToUpper()} | Where-Object {$_ -in $Vendors_All} | Select-Object -Unique)
+
+        $Commands = @(foreach ($c in @($Def.Commands)) {
+            if ($c -eq $null -or $c -is [string] -or "$($c.MainAlgorithm)".Trim() -eq "") {continue}
+            $MainAlgorithm_Raw = "$($c.MainAlgorithm)".Trim()
+            [PSCustomObject]@{
+                MainAlgorithm  = Get-Algorithm $MainAlgorithm_Raw
+                Algo           = if ("$($c.Algo)".Trim() -ne "") {"$($c.Algo)".Trim()} else {$MainAlgorithm_Raw}
+                Params         = "$($c.Params)".Trim()
+                Fee            = ConvertTo-CustomMinerNumber $c.Fee
+                ExtendInterval = if ("$($c.ExtendInterval)" -match "^\s*(\d+)\s*$") {[int]$Matches[1]} else {$null}
+                MinMemGB       = ConvertTo-CustomMinerNumber $c.MinMemGB 0
+                DAG            = Get-Yes $c.DAG
+                Vendors        = @(Get-ConfigArray "$($c.Vendors)" | Foreach-Object {"$_".Trim().ToUpper()} | Where-Object {$_ -in $Vendors} | Select-Object -Unique)
+            }
+        })
+
+        $DevIdProp = "$($Def.DeviceIndexProperty)".Trim()
+        if ($DevIdProp -notin $DevIdProps) {$DevIdProp = "Type_Vendor_Index"}
+
+        $DevSep = "$($Def.DeviceSeparator)"
+        if ($DevSep -eq "") {$DevSep = ","}
+
+        [PSCustomObject]@{
+            Name                = $Name
+            Enable              = Get-Yes $Def.Enable
+            Comment             = "$($Def.Comment)".Trim()
+            ManualUri           = "$($Def.ManualUri)".Trim()
+            Version             = if ("$($Def.Version)".Trim() -ne "") {"$($Def.Version)".Trim()} else {"1.0"}
+            Vendors             = $Vendors
+            Windows             = [PSCustomObject]@{Uri = "$($Def.Windows.Uri)".Trim(); Path = ("$($Def.Windows.Path)".Trim() -replace "^[\\/]+" -replace "/","\")}
+            Linux               = [PSCustomObject]@{Uri = "$($Def.Linux.Uri)".Trim();   Path = ("$($Def.Linux.Path)".Trim() -replace "^[\\/]+" -replace "/","\")}
+            LinuxArm            = [PSCustomObject]@{Uri = "$($Def.LinuxArm.Uri)".Trim(); Path = ("$($Def.LinuxArm.Path)".Trim() -replace "^[\\/]+" -replace "/","\")}
+            API                 = if ("$($Def.API)".Trim() -ne "") {"$($Def.API)".Trim()} else {"Wrapper"}
+            HashRateRegex       = "$($Def.HashRateRegex)".Trim()
+            Port                = if ("$($Def.Port)" -match "^\s*(\d+)\s*$") {[int]$Matches[1]} else {4000}
+            DevFee              = ConvertTo-CustomMinerNumber $Def.DevFee 0
+            Arguments           = "$($Def.Arguments)".Trim()
+            SSLArguments        = "$($Def.SSLArguments)".Trim()
+            EnableSSL           = if ($Def.PSObject.Properties["EnableSSL"]) {Get-Yes $Def.EnableSSL} else {$true}
+            DeviceIndexProperty = $DevIdProp
+            DeviceIndexHex      = Get-Yes $Def.DeviceIndexHex
+            DeviceSeparator     = $DevSep
+            EnvVars             = @(Get-ConfigArray "$($Def.EnvVars)" | Where-Object {$_ -match "="} | Select-Object)
+            ExcludePoolName     = "$($Def.ExcludePoolName)".Trim()
+            ShowMinerWindow     = Get-Yes $Def.ShowMinerWindow
+            ExtendInterval      = if ("$($Def.ExtendInterval)" -match "^\s*(\d+)\s*$") {[int]$Matches[1]} else {1}
+            Commands            = $Commands
+        }
+    })
+}
+
+function Expand-CustomMinerArguments {
+    # Substitutes the %TOKEN% placeholders of a custom miner argument template.
+    # Unknown tokens stay literal; $mport / $memsizegb are left for Miner.GetArguments()
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $False)]
+        [String]$Template = "",
+        [Parameter(Mandatory = $False)]
+        [Hashtable]$Values = @{}
+    )
+    if ($Template -eq "") {return ""}
+    $Template = $Template -replace "%MPORT%","`$mport"
+    $Result = [regex]::Replace($Template,"%([A-Z_]+)%",[System.Text.RegularExpressions.MatchEvaluator]{
+        param($match)
+        $k = $match.Groups[1].Value
+        if ($Values.ContainsKey($k)) {"$($Values[$k])"} else {$match.Value}
+    })
+    $Result.Trim()
 }
 
 function Get-LastSatPrice {

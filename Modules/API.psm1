@@ -14,6 +14,7 @@
     $API.UpdateBalance = $false
     $API.UpdateMRR   = $false
     $API.WatchdogReset = $false
+    $API.ClearCache  = $false
     $API.ApplyOC     = $false
     $API.LockMiners  = $false
     $API.IsVirtual   = $false
@@ -84,6 +85,16 @@
         })
     }
     Write-Log -Level Info "Started $($MaxThreads) API threads on port $($API.APIport)"
+}
+
+Function Clear-APIServerStreams {
+    # the pool shares the console host, so a listener pipeline mirrors every Write-Host
+    # of the whole process into its information buffers - drain them, they are never read
+    if ($Global:APIListeners) {
+        foreach ($Listener in $Global:APIListeners) {
+            try {$Listener.PowerShell.Streams.ClearStreams()} catch {}
+        }
+    }
 }
 
 Function Stop-APIServer {

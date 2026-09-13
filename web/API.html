@@ -1,6 +1,5 @@
-<html>
+﻿<html>
 <head>
-    <script src="https://code.jquery.com/jquery-3.3.1.min.js" integrity="sha256-FgpCb/KJQlLNfOu91ta32o/NMZxltwRo8QtmkMRdAu8=" crossorigin="anonymous"></script>
 </head>
 <body>
     <style>
@@ -31,7 +30,7 @@
 
         <h3>System Info</h3>
         <a href="/sysinfo">/sysinfo</a>
-        <p>Hardwareinformation summary: CPU load, memory and harddisk usage</p>
+        <p>Hardware information summary: CPU load, memory and hard disk usage</p>
 
         <h3>CPU Info</h3>
         <a href="/cpuinfo">/cpuinfo</a>
@@ -52,6 +51,30 @@
         <h3>Save Config</h3>
         <a href="/saveconfig">/saveconfig</a>
         <p>Save values into a specific config file. Send the data as POST request. Parameter ConfigFile needs to contain the nameprefix of the config file.</p>
+
+        <h3>Custom Miners</h3>
+        <a href="/customminers">/customminers</a>
+        <p>Returns the definitions of .\Config\customminers.config.txt as an array, each with a Status block (Valid, HasBinaryForOS, Installed, UriMatch, StatCount)</p>
+
+        <h3>Miner APIs</h3>
+        <a href="/minerapis">/minerapis</a>
+        <p>Returns the names of the miner API classes that a custom miner can use to read its hashrate (Wrapper first)</p>
+
+        <h3>Save Custom Miner</h3>
+        <a href="/savecustomminer">/savecustomminer</a>
+        <p>Add, update or delete one custom miner. Send as POST request with the parameters Action (add, update or delete), Name, OldName (rename), Data (the definition as JSON) and optionally Userpool (a userpools.config.txt entry as JSON). Returns Success and Error.</p>
+
+        <h3>User Pools</h3>
+        <a href="/userpools">/userpools</a>
+        <p>Returns the entries of .\Config\userpools.config.txt as an array, each with its array Index, a change Tag and a Status block (Valid, Enabled, Complete, Currency, CoinKnown, CoinName, Algorithm, Region, HasSection, Wallet, HasWallet, Selected, Excluded)</p>
+
+        <h3>User Pool Info</h3>
+        <a href="/userpoolinfo">/userpoolinfo</a>
+        <p>Returns the lookups for the User Pools page: Algorithms, Coins (symbol to Algo and Name), Regions, EthModes, BuiltinPools, plus the current PoolName and ExcludePoolName lists of config.txt, PoolNameIsDefault, Managed (Userpools, Pools, Config), ServerName, WorkerName and HasDefaultWallet</p>
+
+        <h3>Save User Pool</h3>
+        <a href="/saveuserpool">/saveuserpool</a>
+        <p>Add, update or delete one entry of userpools.config.txt, add a pool to PoolName, or store a wallet. Send as POST request with the parameters Action (add, update, delete, poolname or wallet), Index and Tag (update, delete), Data (the entry as JSON), optionally SetWallet=1 with Wallet (written to pools.config.txt under the pool name and currency), AddToPoolName=1, and Name plus Currency (poolname, wallet). On a client that receives userpools.config.txt from its server only poolname and wallet are allowed, and only while config.txt and pools.config.txt are local. Returns Success, Error, Index, Name, Currency and Warnings.</p>
 
         <h3>setup.json</h3>
         <a href="/setup.json">/setup.json</a>
@@ -268,10 +291,13 @@
 
 </fieldset>
     <script>
-    $(function () {
-        var port = $(location).attr('port')
-        $("a").each(function () { $(this).attr('href', $(this).attr('href').replace(':4000', ':' + port)) })
-        $("#res").text($("#res").text().replace(':4000', ':' + port))
+    document.addEventListener("DOMContentLoaded", () => {
+        const port = location.port;
+        for (const a of document.querySelectorAll("a")) {
+            a.setAttribute('href', a.getAttribute('href').replace(':4000', ':' + port));
+        }
+        const res = document.getElementById("res");
+        if (res) res.textContent = res.textContent.replace(':4000', ':' + port);
     })
     </script>
 </body>

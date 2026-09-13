@@ -13,13 +13,13 @@ if (-not $Global:DeviceCache.DevicesByTypes.NVIDIA -and -not $InfoOnly) {return}
 $ManualUri = "https://github.com/rigelminer/rigel/releases"
 $Port = "324{0:d2}"
 $DevFee = 0.7
-$Version = "1.22.3"
+$Version = "1.23.2"
 
 if ($IsLinux) {
     $Path = ".\Bin\NVIDIA-Rigel\rigel"
     $UriCuda = @(
         [PSCustomObject]@{
-            Uri = "https://github.com/RainbowMiner/miner-binaries/releases/download/v1.22.3-rigel/rigel-1.22.3-linux.tar.gz"
+            Uri = "https://github.com/RainbowMiner/miner-binaries/releases/download/v1.23.2-rigel/rigel-1.23.2-linux.tar.gz"
             Cuda = "8.0"
         }
     )
@@ -27,7 +27,7 @@ if ($IsLinux) {
     $Path = ".\Bin\NVIDIA-Rigel\rigel.exe"
     $UriCuda = @(
         [PSCustomObject]@{
-            Uri = "https://github.com/RainbowMiner/miner-binaries/releases/download/v1.22.3-rigel/rigel-1.22.3-win.zip"
+            Uri = "https://github.com/RainbowMiner/miner-binaries/releases/download/v1.23.2-rigel/rigel-1.23.2-win.zip"
             Cuda = "8.0"
         }
     )
@@ -46,7 +46,7 @@ $Commands = [PSCustomObject[]]@(
     [PSCustomObject]@{MainAlgorithm = "Ethash4g";        DAG = $true; MinMemGB = 3; Params = ""; ExtendInterval = 2; Vendor = @("NVIDIA"); Algorithm = "ethash"} #Ethash (ETH)
     [PSCustomObject]@{MainAlgorithm = "Ethash5g";        DAG = $true; MinMemGB = 4; Params = ""; ExtendInterval = 2; Vendor = @("NVIDIA"); Algorithm = "ethash"} #Ethash (ETH)
     [PSCustomObject]@{MainAlgorithm = "EthashLowMemory"; DAG = $true; MinMemGB = 1; Params = ""; ExtendInterval = 2; Vendor = @("NVIDIA"); Algorithm = "ethash"} #Ethash (ETH) for low memory coins
-    [PSCustomObject]@{MainAlgorithm = "ethashb3";        DAG = $true; MinMemGB = 2; Params = ""; ExtendInterval = 2; Vendor = @("NVIDIA")} #Ethash3B (RTH)
+    #[PSCustomObject]@{MainAlgorithm = "ethashb3";        DAG = $true; MinMemGB = 2; Params = ""; ExtendInterval = 2; Vendor = @("NVIDIA")} #Ethash3B (RTH) removed with v1.23.2
     [PSCustomObject]@{MainAlgorithm = "fishhash";        DAG = $true; MinMemGB = 5; Params = "";                     Vendor = @("NVIDIA")} #Fishhash/IRON from 2. April 2024
     [PSCustomObject]@{MainAlgorithm = "karlsenhashv2";                MinMemGB = 2; Params = "";                     Vendor = @("NVIDIA"); Fee = 1.0} #KarlsenHashV2/KLS
     [PSCustomObject]@{MainAlgorithm = "nexapow";         DAG = $true; MinMemGB = 2; Params = "";                     Vendor = @("NVIDIA"); Fee = 2.0} #NexaPoW/NEXA
@@ -56,12 +56,13 @@ $Commands = [PSCustomObject[]]@(
     [PSCustomObject]@{MainAlgorithm = "KawPOW3g";        DAG = $true; MinMemGB = 2; Params = "";                     Vendor = @("NVIDIA"); Algorithm = "kawpow"; Fee = 1.0; ExcludePoolName = "MiningRigRentals"} #KawPOW
     [PSCustomObject]@{MainAlgorithm = "KawPOW4g";        DAG = $true; MinMemGB = 2; Params = "";                     Vendor = @("NVIDIA"); Algorithm = "kawpow"; Fee = 1.0; ExcludePoolName = "MiningRigRentals"} #KawPOW
     [PSCustomObject]@{MainAlgorithm = "KawPOW5g";        DAG = $true; MinMemGB = 2; Params = "";                     Vendor = @("NVIDIA"); Algorithm = "kawpow"; Fee = 1.0; ExcludePoolName = "MiningRigRentals"} #KayPOW
-    [PSCustomObject]@{MainAlgorithm = "quai";            DAG = $true; MinMemGB = 2; Params = "";                     Vendor = @("NVIDIA"); Fee = 1.0} #ProgPowQuai/QUAI
+    #[PSCustomObject]@{MainAlgorithm = "quai";            DAG = $true; MinMemGB = 2; Params = "";                     Vendor = @("NVIDIA"); Fee = 1.0} #ProgPowQuai/QUAI
     [PSCustomObject]@{MainAlgorithm = "progpowz";        DAG = $true; MinMemGB = 2; Params = "";                     Vendor = @("NVIDIA"); Fee = 1.0} #ProgPowZ/ZANO
     [PSCustomObject]@{MainAlgorithm = "sha256ton";                    MinMemGB = 2; Params = "";                     Vendor = @("NVIDIA"); Fee = 1.0; PoolName = "Icemining"} #SHA256ton/GRAM+CHAPA
     [PSCustomObject]@{MainAlgorithm = "sha3x";                        MinMemGB = 2; Params = "";                     Vendor = @("NVIDIA"); Fee = 1.0} #SHA3x/XTM
     [PSCustomObject]@{MainAlgorithm = "sha512256d";                   MinMemGB = 2; Params = "";                     Vendor = @("NVIDIA"); Fee = 1.0} #SHA512256d/RAD
-    [PSCustomObject]@{MainAlgorithm = "xelishashv2";                  MinMemGB = 2; Params = "";                     Vendor = @("NVIDIA"); Fee = 3.0; ExtendInterval = 3} #XelisHashv2/XEL
+    #[PSCustomObject]@{MainAlgorithm = "xelishashv2";                  MinMemGB = 2; Params = "";                     Vendor = @("NVIDIA"); Fee = 3.0; ExtendInterval = 3} #XelisHashv2
+    [PSCustomObject]@{MainAlgorithm = "xelishashv3";                  MinMemGB = 2; Params = "";                     Vendor = @("NVIDIA"); Fee = 2.0; ExtendInterval = 3} #XelisHashv3/XEL
 
     # Dual mining
     [PSCustomObject]@{MainAlgorithm = "abelian";         DAG = $true; MinMemGB = 2; Params = "";                     Vendor = @("NVIDIA"); SecondaryAlgorithm = "alephium"} #Abelian/ABEL + ALPH
@@ -95,9 +96,9 @@ $Commands = [PSCustomObject[]]@(
     [PSCustomObject]@{MainAlgorithm = "EthashLowMemory"; DAG = $true; MinMemGB = 1; Params = ""; ExtendInterval = 2; Vendor = @("NVIDIA"); SecondaryAlgorithm = "alephium"; Algorithm = "ethash"} #Ethash (ETH) for low memory coins
     [PSCustomObject]@{MainAlgorithm = "EthashLowMemory"; DAG = $true; MinMemGB = 2; Params = ""; ExtendInterval = 2; Vendor = @("NVIDIA"); SecondaryAlgorithm = "sha512256d"; Algorithm = "ethash"} #Ethash (ETH)
 
-    [PSCustomObject]@{MainAlgorithm = "ethashb3";        DAG = $true; MinMemGB = 2; Params = "";                     Vendor = @("NVIDIA"); SecondaryAlgorithm = "alephium"}   #BlakeB3/HYP + ALPH
-    [PSCustomObject]@{MainAlgorithm = "ethashb3";        DAG = $true; MinMemGB = 2; Params = "";                     Vendor = @("NVIDIA"); SecondaryAlgorithm = "sha256ton"; SecondaryPoolName = "Icemining"} #BlakeB3/HYP + GRAM/CHAPA
-    [PSCustomObject]@{MainAlgorithm = "ethashb3";        DAG = $true; MinMemGB = 2; Params = "";                     Vendor = @("NVIDIA"); SecondaryAlgorithm = "sha512256d"} #BlakeB3/HYP + RXD
+    #[PSCustomObject]@{MainAlgorithm = "ethashb3";        DAG = $true; MinMemGB = 2; Params = "";                     Vendor = @("NVIDIA"); SecondaryAlgorithm = "alephium"}   #BlakeB3/HYP + ALPH
+    #[PSCustomObject]@{MainAlgorithm = "ethashb3";        DAG = $true; MinMemGB = 2; Params = "";                     Vendor = @("NVIDIA"); SecondaryAlgorithm = "sha256ton"; SecondaryPoolName = "Icemining"} #BlakeB3/HYP + GRAM/CHAPA
+    #[PSCustomObject]@{MainAlgorithm = "ethashb3";        DAG = $true; MinMemGB = 2; Params = "";                     Vendor = @("NVIDIA"); SecondaryAlgorithm = "sha512256d"} #BlakeB3/HYP + RXD
 
     [PSCustomObject]@{MainAlgorithm = "fishhash";        DAG = $true; MinMemGB = 5; Params = "";                     Vendor = @("NVIDIA"); SecondaryAlgorithm = "alephium"}   #FishHash/IRON + ALPH
     [PSCustomObject]@{MainAlgorithm = "fishhash";        DAG = $true; MinMemGB = 5; Params = "";                     Vendor = @("NVIDIA"); SecondaryAlgorithm = "sha256ton"; SecondaryPoolName = "Icemining"} #FishHash/IRON + GRAM/CHAPA
@@ -148,18 +149,6 @@ foreach ($Miner_Vendor in @("NVIDIA")) {
         $Miner_Model = $_.Model
         $Device = $Global:DeviceCache.DevicesByTypes."$($_.Vendor)" | Where-Object {$_.Model -eq $Miner_Model}
 
-        $ZilAlgorithm = ""
-        $ZilParams2   = ""
-        $ZilParams3   = ""
-
-        if ($Pools.ZilliqaDual) {
-            if ($ZilWallet = $Pools.ZilliqaDual.Wallet) {
-                $ZilAlgorithm = "+zil"
-                $ZilParams2   = " -o [2]$($Pools.ZilliqaDual.Protocol)://$($Pools.ZilliqaDual.Host):$($Pools.ZilliqaDual.Port) -u [2]$($Pools.ZilliqaDual.User)$(if ($Pools.ZilliqaDual.Worker -and $Pools.ZilliqaDual.User -eq $Pools.ZilliqaDual.Wallet) {" -w [2]$($Pools.ZilliqaDual.Worker)"}) --zil-countdown"
-                $ZilParams3   = " -o [3]$($Pools.ZilliqaDual.Protocol)://$($Pools.ZilliqaDual.Host):$($Pools.ZilliqaDual.Port) -u [3]$($Pools.ZilliqaDual.User)$(if ($Pools.ZilliqaDual.Worker -and $Pools.ZilliqaDual.User -eq $Pools.ZilliqaDual.Wallet) {" -w [3]$($Pools.ZilliqaDual.Worker)"}) --zil-countdown"
-            }
-        }
-
         $Commands | Where-Object {$_.Vendor -icontains $Miner_Vendor} | ForEach-Object {
             $First = $true
 
@@ -168,9 +157,7 @@ foreach ($Miner_Vendor in @("NVIDIA")) {
 
             $MainAlgorithm_0  = if ($_.Algorithm) {$_.Algorithm} else {$_.MainAlgorithm}
 
-            $HasEthproxy = $MainAlgorithm_Norm_0 -match $Global:RegexAlgoHasEthproxy
-
-            foreach($MainAlgorithm_Norm in @($MainAlgorithm_Norm_0,"$($MainAlgorithm_Norm_0)-$($Miner_Model)","$($MainAlgorithm_Norm_0)-GPU")) {
+            foreach($MainAlgorithm_Norm in @(Get-PoolAlgorithmKeys -Pools $Pools -Algorithm $MainAlgorithm_Norm_0 -Model $Miner_Model -ExcludePoolName "$($_.ExcludePoolName)" -PoolName "$($_.PoolName)")) {
                 if (-not $Pools.$MainAlgorithm_Norm.Host) {continue}
 
                 $MinMemGB = if ($_.DAG) {if ($Pools.$MainAlgorithm_Norm.DagSizeMax) {$Pools.$MainAlgorithm_Norm.DagSizeMax} else {Get-EthDAGSize -CoinSymbol $Pools.$MainAlgorithm_Norm.CoinSymbol -Algorithm $MainAlgorithm_Norm_0 -Minimum $_.MinMemGb}} else {$_.MinMemGb}
@@ -183,9 +170,10 @@ foreach ($Miner_Vendor in @("NVIDIA")) {
 
                 if ($MainAlgorithm_0 -eq "kawpow") {
                     if ($Pools.$MainAlgorithm_Norm.CoinSymbol -eq "AIPG")      {$CoinParams = " --coin aipg"}
-                    elseif ($Pools.$MainAlgorithm_Norm.CoinSymbol -eq "NEOX")  {$CoinParams = " --coin neox"}
-                    elseif ($Pools.$MainAlgorithm_Norm.CoinSymbol -ne "RVN")   {$CoinParams = " --coin ravencoin"}
                     elseif ($Pools.$MainAlgorithm_Norm.CoinSymbol -eq "CLORE") {$CoinParams = " --coin clore"}
+                    elseif ($Pools.$MainAlgorithm_Norm.CoinSymbol -eq "NEOX")  {$CoinParams = " --coin neox"}
+                    elseif ($Pools.$MainAlgorithm_Norm.CoinSymbol -eq "QUAI")  {$CoinParams = " --coin quai"}
+                    elseif ($Pools.$MainAlgorithm_Norm.CoinSymbol -ne "RVN")   {$CoinParams = " --coin ravencoin"}
                     elseif ($Pools.$MainAlgorithm_Norm.CoinSymbol -eq "XNA")   {$CoinParams = " --coin xnaget-coin octa"}
                 
                 } elseif ($MainAlgorithm_0 -eq "ethash") {
@@ -201,16 +189,6 @@ foreach ($Miner_Vendor in @("NVIDIA")) {
                         $Miner_Name = (@($Name) + @($SecondAlgorithm_Norm_0 | Select-Object | Foreach-Object {"$($MainAlgorithm_Norm_0)-$($_)"}) + @($Miner_Device.Name | Sort-Object) | Select-Object) -join '-'
                         $DeviceIDsAll = $Miner_Device.Type_Vendor_Index -join ','
                         $First = $false
-                    }
-
-                    $ZilParams = ""
-
-                    if ($ZilParams2 -ne "") {
-                        $ZilParams = if ($SecondAlgorithm_Norm_0) {$ZilParams3} else {$ZilParams2}
-                        $ZilNoCache = @($Miner_Device | Foreach-Object {if ($_.OpenCL.GlobalMemsize -le 8gb) {"off"} else {"on"}}) -join ","
-                        if ($ZilNoCache -match "off") {
-                            $ZilParams = "$($ZilParams) --zil-cache-dag $($ZilNoCache)"
-                        }
                     }
 
                     $Pool_Port = if ($Pools.$MainAlgorithm_Norm.Ports -ne $null -and $Pools.$MainAlgorithm_Norm.Ports.GPU) {$Pools.$MainAlgorithm_Norm.Ports.GPU} else {$Pools.$MainAlgorithm_Norm.Port}
@@ -250,7 +228,7 @@ foreach ($Miner_Vendor in @("NVIDIA")) {
                                         DeviceName      = $Miner_Device.Name
                                         DeviceModel     = $Miner_Model
                                         Path            = $Path
-                                        Arguments       = "--api-bind 127.0.0.1:`$mport -d $($DeviceIDsAll)$($IntensityParams) -a $($MainAlgorithm_0)+$($_.SecondaryAlgorithm)$($ZilAlgorithm)$($CoinParams) -o [1]$($Miner_Protocol)://$($Pools.$MainAlgorithm_Norm.Host):$($Pool_Port) -u [1]$($Pools.$MainAlgorithm_Norm.User)$(if ($Pools.$MainAlgorithm_Norm.Pass) {" -p [1]$($Pools.$MainAlgorithm_Norm.Pass)"})$(if ($Pools.$MainAlgorithm_Norm.Worker -and $Pools.$MainAlgorithm_Norm.User -eq $Pools.$MainAlgorithm_Norm.Wallet) {" -w [1]$($Pools.$MainAlgorithm_Norm.Worker)"}) -o [2]$($Pools.$SecondAlgorithm_Norm.Protocol)://$($Pools.$SecondAlgorithm_Norm.Host):$($SecondPool_Port) -u [2]$($Pools.$SecondAlgorithm_Norm.User)$(if ($Pools.$SecondAlgorithm_Norm.Pass) {" -p [2]$($Pools.$SecondAlgorithm_Norm.Pass)"})$(if ($Pools.$SecondAlgorithm_Norm.Worker -and $Pools.$SecondAlgorithm_Norm.User -eq $Pools.$SecondAlgorithm_Norm.Wallet) {" -w [2]$($Pools.$SecondAlgorithm_Norm.Worker)"})$($ZilParams) --no-tui --no-watchdog --dag-reset-mclock off $($_.Params)"
+                                        Arguments       = "--api-bind 127.0.0.1:`$mport -d $($DeviceIDsAll)$($IntensityParams) -a $($MainAlgorithm_0)+$($_.SecondaryAlgorithm)$($CoinParams) -o [1]$($Miner_Protocol)://$($Pools.$MainAlgorithm_Norm.Host):$($Pool_Port) -u [1]$($Pools.$MainAlgorithm_Norm.User)$(if ($Pools.$MainAlgorithm_Norm.Pass) {" -p [1]$($Pools.$MainAlgorithm_Norm.Pass)"})$(if ($Pools.$MainAlgorithm_Norm.Worker -and $Pools.$MainAlgorithm_Norm.User -eq $Pools.$MainAlgorithm_Norm.Wallet) {" -w [1]$($Pools.$MainAlgorithm_Norm.Worker)"}) -o [2]$($Pools.$SecondAlgorithm_Norm.Protocol)://$($Pools.$SecondAlgorithm_Norm.Host):$($SecondPool_Port) -u [2]$($Pools.$SecondAlgorithm_Norm.User)$(if ($Pools.$SecondAlgorithm_Norm.Pass) {" -p [2]$($Pools.$SecondAlgorithm_Norm.Pass)"})$(if ($Pools.$SecondAlgorithm_Norm.Worker -and $Pools.$SecondAlgorithm_Norm.User -eq $Pools.$SecondAlgorithm_Norm.Wallet) {" -w [2]$($Pools.$SecondAlgorithm_Norm.Worker)"}) --no-tui --no-watchdog --dag-reset-mclock off $($_.Params)"
                                         HashRates       = [PSCustomObject]@{
                                                              $MainAlgorithm_Norm = $($Global:StatsCache."$($Miner_Name_Dual)_$($MainAlgorithm_Norm_0)_HashRate".Week * $(if ($_.Penalty) {1-$_.Penalty/100} else {1}))
                                                              $SecondAlgorithm_Norm = $($Global:StatsCache."$($Miner_Name_Dual)_$($SecondAlgorithm_Norm_0)_HashRate".Week * $(if ($_.Penalty) {1-$_.Penalty/100} else {1}))
@@ -274,20 +252,19 @@ foreach ($Miner_Vendor in @("NVIDIA")) {
                                         Benchmarked     = $Global:StatsCache."$($Miner_Name_Dual)_$($MainAlgorithm_Norm_0)_HashRate".Benchmarked
                                         LogFile         = $Global:StatsCache."$($Miner_Name_Dual)_$($MainAlgorithm_Norm_0)_HashRate".LogFile
                                         ExcludePoolName = $_.ExcludePoolName
-                                        DualZIL         = $ZilParams -ne ""
                                     }
                                 }
                             }
                         }
 
                     } else {
-                        $o1_count = "$(if ($ZilParams -ne '') {"[1]"})"
+                        $o1_count = ""
                         [PSCustomObject]@{
                             Name            = $Miner_Name
                             DeviceName      = $Miner_Device.Name
                             DeviceModel     = $Miner_Model
                             Path            = $Path
-                            Arguments       = "--api-bind 127.0.0.1:`$mport -d $($DeviceIDsAll) -a $($MainAlgorithm_0)$($ZilAlgorithm)$($CoinParams) -o $($o1_count)$($Miner_Protocol)://$($Pools.$MainAlgorithm_Norm.Host):$($Pool_Port) -u $($o1_count)$($Pools.$MainAlgorithm_Norm.User)$(if ($Pools.$MainAlgorithm_Norm.Pass) {" -p $($o1_count)$($Pools.$MainAlgorithm_Norm.Pass)"})$(if ($Pools.$MainAlgorithm_Norm.Worker -and $Pools.$MainAlgorithm_Norm.User -eq $Pools.$MainAlgorithm_Norm.Wallet) {" -w $($o1_count)$($Pools.$MainAlgorithm_Norm.Worker)"})$($ZilParams) --no-tui --no-watchdog --dag-reset-mclock off $($_.Params)"
+                            Arguments       = "--api-bind 127.0.0.1:`$mport -d $($DeviceIDsAll) -a $($MainAlgorithm_0)$($CoinParams) -o $($o1_count)$($Miner_Protocol)://$($Pools.$MainAlgorithm_Norm.Host):$($Pool_Port) -u $($o1_count)$($Pools.$MainAlgorithm_Norm.User)$(if ($Pools.$MainAlgorithm_Norm.Pass) {" -p $($o1_count)$($Pools.$MainAlgorithm_Norm.Pass)"})$(if ($Pools.$MainAlgorithm_Norm.Worker -and $Pools.$MainAlgorithm_Norm.User -eq $Pools.$MainAlgorithm_Norm.Wallet) {" -w $($o1_count)$($Pools.$MainAlgorithm_Norm.Worker)"}) --no-tui --no-watchdog --dag-reset-mclock off $($_.Params)"
                             HashRates       = [PSCustomObject]@{$MainAlgorithm_Norm = $($Global:StatsCache."$($Miner_Name)_$($MainAlgorithm_Norm_0)_HashRate".Week)}
                             API             = "Rigel"
                             Port            = $Miner_Port
@@ -304,7 +281,6 @@ foreach ($Miner_Vendor in @("NVIDIA")) {
                             Benchmarked     = $Global:StatsCache."$($Miner_Name)_$($MainAlgorithm_Norm_0)_HashRate".Benchmarked
                             LogFile         = $Global:StatsCache."$($Miner_Name)_$($MainAlgorithm_Norm_0)_HashRate".LogFile
                             ExcludePoolName = $_.ExcludePoolName
-                            DualZIL         = $ZilParams -ne ""
                         }
                     }
                 }
